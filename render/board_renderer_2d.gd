@@ -14,14 +14,16 @@ var board: SimBoard
 var label := ""
 
 
-## Screen point -> Vector2i(column, visible row from the top); row H is the rising row.
-func screen_to_cell(screen: Vector2) -> Vector2i:
-	var p := get_global_transform_with_canvas().affine_inverse() * screen
-	var col := floori(p.x / CELL)
-	var row := floori(p.y / CELL + BoardView.lift(board)) if board else -1
-	if col < 0 or col >= SimConst.W or row < 0 or row > SimConst.H:
-		return Vector2i(-1, -1)
-	return Vector2i(col, row)
+## Screen point -> cell units (x right, y down from the top visible row; y >= H is
+## the rising row), or (-1, -1) off the board.
+func screen_to_cell(screen: Vector2) -> Vector2:
+	if board == null:
+		return Vector2(-1, -1)
+	var q := get_global_transform_with_canvas().affine_inverse() * screen
+	var p := Vector2(q.x / CELL, q.y / CELL + BoardView.lift(board))
+	if p.x < 0.0 or p.x >= SimConst.W or p.y < 0.0 or p.y >= SimConst.H + 1:
+		return Vector2(-1, -1)
+	return p
 
 
 func _process(_delta: float) -> void:

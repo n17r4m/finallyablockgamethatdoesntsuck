@@ -122,23 +122,23 @@ func _process(delta: float) -> void:
 	_warning.text = "  ".join(warn)
 
 
-## Screen point -> Vector2i(column, visible row from the top); row H is the rising
-## row below the stack. Casts through the camera onto the board's plane.
-func screen_to_cell(screen: Vector2) -> Vector2i:
+## Screen point -> cell units (x right from the left edge, y down from the top
+## visible row; y >= H is the rising row), or (-1, -1) off the board. Casts
+## through the camera onto the board's plane.
+func screen_to_cell(screen: Vector2) -> Vector2:
 	var cam := get_viewport().get_camera_3d()
-	if cam == null:
-		return Vector2i(-1, -1)
+	if cam == null or board == null:
+		return Vector2(-1, -1)
 	var inv := global_transform.affine_inverse()
 	var o := inv * cam.project_ray_origin(screen)
 	var d := inv.basis * cam.project_ray_normal(screen)
 	if absf(d.z) < 1e-6:
-		return Vector2i(-1, -1)
+		return Vector2(-1, -1)
 	var hit := o + d * (-o.z / d.z)
-	var col := roundi(hit.x + W / 2.0 - 0.5)
-	var row := roundi(H / 2.0 - 0.5 - hit.y + BoardView.lift(board)) if board else -1
-	if col < 0 or col >= W or row < 0 or row > H:
-		return Vector2i(-1, -1)
-	return Vector2i(col, row)
+	var p := Vector2(hit.x + W / 2.0, H / 2.0 - hit.y + BoardView.lift(board))
+	if p.x < 0.0 or p.x >= W or p.y < 0.0 or p.y >= H + 1:
+		return Vector2(-1, -1)
+	return p
 
 
 ## BoardView cell space (y down from the top visible row) -> local 3D (y up, centred).
