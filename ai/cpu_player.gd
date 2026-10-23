@@ -5,18 +5,25 @@ extends RefCounted
 ## Every frame it
 ##   1. projects the real board to how it will look once clears and falls settle
 ##      (a W x H byte grid; garbage is a fixed obstacle),
-##   2. samples random swap sequences up to `depth` long — rollouts that pick
-##      each step from the evolving model (every prefix is a candidate), and
-##      mutations of current_plan — scoring each with instant cascade
-##      resolution plus a board-shape heuristic,
+##   2. searches swap plans up to `depth` long, scoring each with instant
+##      cascade resolution plus a linear board heuristic (features() . weights),
 ##   3. keeps the best as current_plan if it beats the plan being executed
 ##      (re-scored on the fresh projection), and
 ##   4. walks the cursor to the plan's next swap and presses it.
+##
+## Three searches share that model, so they can be compared in the ring:
+##   stochastic  anytime: rollouts + mutations of current_plan, `samples` per frame
+##   beam        deterministic: keep the best `samples / 3` plans per depth
+##   flatmc      every first swap, each continued by `samples / 4` random rollouts
+## beam and flatmc only re-search when the projected board changes.
 ## It only reads the board and returns an input mask, like a player would.
 ##
 ## Opponents = a personality (style weights + quirks) played at a level
-## (skill: how well it searches and how fast its hands are). Noise doubles as eagerness: a
-## noiseless searcher rarely finds a plan clearly better than waiting.
+## (skill: how well it searches and how fast its hands are).
+##
+## Noise is not just sloppiness: in league tests a noiseless beam lost 20-0 to
+## noisy ones (it rarely acts), noise 25 beat 10, and a flat `eager` bonus did
+## not substitute for it (data/noise1, data/eager1). Mechanism not yet understood.
 
 const W := SimConst.W
 const H := SimConst.H
@@ -26,9 +33,9 @@ const BLOCK := 8 # model: solid and unknown (converting garbage)
 
 const SKILLS := {
 	"easy": {"depth": 1, "samples": 2, "step_frames": 9, "noise": 40.0, "raise": false},
-	"normal": {"depth": 2, "samples": 4, "step_frames": 5, "noise": 14.0, "raise": true},
-	"hard": {"depth": 2, "samples": 10, "step_frames": 2, "noise": 10.0, "raise": true},
-	"max": {"depth": 3, "samples": 16, "step_frames": 1, "noise": 8.0, "raise": true},
+	"normal": {"depth": 2, "samples": 4, "step_frames": 5, "noise": 25.0, "raise": true},
+	"hard": {"depth": 2, "samples": 10, "step_frames": 2, "noise": 25.0, "raise": true},
+	"max": {"depth": 3, "samples": 16, "step_frames": 1, "noise": 25.0, "raise": true},
 }
 
 ## Score-function weights. clear/chain/combo/garbage reward outcomes; the rest shape the board.
@@ -59,6 +66,13 @@ var step_frames: int # frames per cursor step / swap press
 var noise: float # score jitter: higher = sloppier choices
 var use_raise: bool
 var w := {} # style weights
+var search := "stochastic"
+var eager := 0.0 # bonus for any plan that acts: waiting is never free, the stack keeps rising
+
+# Think-cost stats, for logging.
+var think_usec := 0
+var think_usec_max := 0
+var think_frames := 0
 
 var current_plan: Array[Vector2i] = [] # swaps (left cell x, visible row y from top), next first
 var current_value := -INF
@@ -68,9 +82,12 @@ var _frame := 0
 var _released := true
 var _last_rise := 0
 var _cursor := Vector2i.ZERO
+var _incoming := 0 # garbage rows queued or still up in the hidden buffer
+var _last_hash := 0
 
 
-func _init(skill: String, style: String, rng_seed: int) -> void:
+func _init(skill: String, style: String, rng_seed: int, search_kind := "stochastic") -> void:
+	search = search_kind
 	var p: Dictionary = SKILLS[skill]
 	depth = p.depth
 	samples = p.samples
@@ -79,6 +96,27 @@ func _init(skill: String, style: String, rng_seed: int) -> void:
 	use_raise = p.raise
 	w = STYLES[style].duplicate()
 	_rng.seed = rng_seed
+
+
+## "Name:level" (roster personality) or "search/style/level", e.g. "beam/balanced/hard",
+## optionally followed by overrides: "beam/balanced/hard?noise=0&depth=3".
+static func from_spec(spec: String, rng_seed: int) -> CpuPlayer:
+	var parts := spec.split("?", true, 1)
+	var cpu: CpuPlayer
+	if "/" in parts[0]:
+		var p := parts[0].split("/")
+		cpu = CpuPlayer.new(p[2], p[1], rng_seed, p[0])
+	else:
+		var q := parts[0].split(":")
+		cpu = opponent(q[0], q[1] if q.size() > 1 else "hard", rng_seed)
+	if parts.size() > 1:
+		for kv in parts[1].split("&"):
+			var pair := kv.split("=")
+			if pair[0] in cpu.w:
+				cpu.w[pair[0]] = float(pair[1])
+			else:
+				cpu.set(pair[0], str_to_var(pair[1]))
+	return cpu
 
 
 static func opponent(name: String, level: String, rng_seed: int) -> CpuPlayer:
@@ -96,9 +134,34 @@ func next_input(b: SimBoard) -> int:
 		current_plan.clear() # the stack pushed up a row; plan coordinates are stale
 	_last_rise = b.rise
 	_cursor = Vector2i(b.cursor_x, b.cursor_y - TOP)
+	var t0 := Time.get_ticks_usec()
+	_incoming = _garbage_rows(b)
 	var g := project(b)
-	_think(g)
+	match search:
+		"stochastic":
+			_think(g)
+		_:
+			var h := hash(g) ^ _incoming
+			if h != _last_hash or current_plan.is_empty():
+				_last_hash = h
+				current_plan = _beam(g) if search == "beam" else _flat_mc(g)
+	var dt := Time.get_ticks_usec() - t0
+	think_usec += dt
+	think_usec_max = maxi(think_usec_max, dt)
+	think_frames += 1
 	return _act(b, g)
+
+
+func _garbage_rows(b: SimBoard) -> int:
+	var rows := 0
+	for slab in b.gar_q:
+		rows += slab / 8
+	for y in TOP:
+		for x in W:
+			if b.gid[y * W + x] != 0:
+				rows += 1
+				break
+	return rows
 
 
 # --- search -------------------------------------------------------------------
@@ -106,7 +169,7 @@ func next_input(b: SimBoard) -> int:
 func _think(g: PackedByteArray) -> void:
 	var moves := _valid_swaps(g)
 	var idle := evaluate(g, [])
-	current_value = evaluate(g, current_plan) if not current_plan.is_empty() else -INF
+	current_value = evaluate(g, current_plan) + eager if not current_plan.is_empty() else -INF
 	var best := current_plan
 	var best_v := maxf(current_value, idle)
 	if best_v == idle and current_value < idle:
@@ -123,7 +186,7 @@ func _think(g: PackedByteArray) -> void:
 		else:
 			plan = []
 			v = _rollout(g, plan)
-		v += _rng.randf_range(-noise, noise)
+		v += _rng.randf_range(-noise, noise) + (eager if not plan.is_empty() else 0.0)
 		if v > best_v:
 			best_v = v
 			best = plan
@@ -132,18 +195,71 @@ func _think(g: PackedByteArray) -> void:
 		current_value = best_v
 
 
-## Random walk of up to `depth` swaps, each drawn from the model as it evolves.
-## Fills `plan` with the best-scoring prefix and returns its value.
-func _rollout(g: PackedByteArray, plan: Array[Vector2i]) -> float:
+## Deterministic beam search: expand every swap from the best `width` plans per depth.
+func _beam(g: PackedByteArray) -> Array[Vector2i]:
+	var width := maxi(2, samples / 3)
+	var best: Array[Vector2i] = []
+	var best_v := evaluate(g, [])
+	# node: [grid, plan, reward so far, travel, last pos, discount, score]
+	var frontier: Array = [[g, best.duplicate(), 0.0, 0, _cursor, 1.0, best_v]]
+	for d in depth:
+		var children: Array = []
+		for node: Array in frontier:
+			for s in _valid_swaps(node[0]):
+				var m: PackedByteArray = node[0].duplicate()
+				_swap(m, s.x, s.y)
+				var total: float = node[2] + _reward(_resolve(m)) * node[5]
+				var travel: int = node[3] + absi(s.x - node[4].x) + absi(s.y - node[4].y)
+				var plan: Array[Vector2i] = node[1].duplicate()
+				plan.append(s)
+				var v: float = total + _shape(m) - travel * w.travel - plan.size() * 2.0 \
+						+ _rng.randf_range(-noise, noise) + eager
+				children.append([m, plan, total, travel, s, node[5] * 0.85, v])
+				if v > best_v:
+					best_v = v
+					best = plan
+		children.sort_custom(func(a: Array, b: Array) -> bool: return a[6] > b[6])
+		frontier = children.slice(0, width)
+	return best
+
+
+## Flat Monte Carlo: try every first swap; value it by the best of a few random
+## continuations. Commits to one swap at a time.
+func _flat_mc(g: PackedByteArray) -> Array[Vector2i]:
+	var rollouts := maxi(1, samples / 4)
+	var best: Array[Vector2i] = []
+	var best_v := evaluate(g, [])
+	for s in _valid_swaps(g):
+		var m := g.duplicate()
+		_swap(m, s.x, s.y)
+		var base := _reward(_resolve(m))
+		var travel := absi(s.x - _cursor.x) + absi(s.y - _cursor.y)
+		var v: float = base + _shape(m) - travel * w.travel - 2.0
+		if depth > 1:
+			for k in rollouts:
+				var cont: Array[Vector2i] = []
+				var cv := _rollout(m, cont, s, depth - 1)
+				if not cont.is_empty():
+					v = maxf(v, base + cv * 0.85 - travel * w.travel - 2.0)
+		v += _rng.randf_range(-noise, noise) + eager
+		if v > best_v:
+			best_v = v
+			best = [s]
+	return best
+
+
+## Random walk of up to `steps` swaps from `from`, each drawn from the model as it
+## evolves. Fills `plan` with the best-scoring prefix and returns its value.
+func _rollout(g: PackedByteArray, plan: Array[Vector2i], from := Vector2i(-1, -1), steps := -1) -> float:
 	var m := g.duplicate()
 	var total := 0.0
 	var travel := 0
-	var pos := _cursor
+	var pos := _cursor if from.x < 0 else from
 	var discount := 1.0
 	var walk: Array[Vector2i] = []
 	var best_v := -INF
 	var best_len := 0
-	for k in depth:
+	for k in (depth if steps < 0 else steps):
 		var moves := _valid_swaps(m)
 		if moves.is_empty():
 			break
@@ -202,7 +318,18 @@ func _reward(r: Vector4i) -> float:
 	return v
 
 
+## Board features the heuristic is linear in — and what learned weights will use.
+const FEATURES := ["pairs", "bump", "height", "danger"]
+
+
 func _shape(m: PackedByteArray) -> float:
+	var f := features(m, _incoming)
+	return f[0] * w.pairs - f[1] * w.bump - f[2] * w.height - f[3] * w.danger
+
+
+## [same-colour adjacent pairs, column bumpiness, total height, danger²]; danger
+## counts incoming garbage rows as height.
+func features(m: PackedByteArray, incoming := 0) -> PackedFloat32Array:
 	var heights := PackedInt32Array()
 	heights.resize(W)
 	var pairs := 0
@@ -228,8 +355,8 @@ func _shape(m: PackedByteArray) -> float:
 		top = maxi(top, heights[x])
 		if x > 0:
 			bump += absi(heights[x] - heights[x - 1])
-	var danger := maxi(top - 7, 0)
-	return pairs * w.pairs - bump * w.bump - total * w.height - danger * danger * w.danger
+	var danger := maxi(top + incoming - 7, 0)
+	return PackedFloat32Array([pairs, bump, total, danger * danger])
 
 
 # --- model --------------------------------------------------------------------

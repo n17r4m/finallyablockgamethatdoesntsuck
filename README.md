@@ -10,7 +10,9 @@ Panel-de-Pon-style 1v1 versus, Godot 4.7, pure GDScript, rollback netcode.
 - Renderer: `[video] renderer="3d"` (default) or `"2d"` in `user://settings.cfg`.
 - Record footage: `godot --path . --write-movie out.avi --fixed-fps 60 -- --practice` (sim follows movie time).
 - Tests (both must print PASS): `godot --headless --path . -s tests/test_sim.gd` (game rules) `-s tests/test_netcode.gd` (lossy-link rollback soak), `-s tests/test_cpu.gd` (CPU sanity, slow).
-- CPU league: `godot --headless --path . -s tools/league.gd -- hard 6`.
+- CPU league (logs to `data/`, gitignored): `nice -n 19 godot --headless --path . -s tools/league.gd --
+  --agents=beam/balanced/hard,flatmc/chainer/hard,Architect:max --games=10 --out=data/run1 [--positions]`,
+  then `python3 tools/league_report.py data/run1`.
 
 ## Layout
 - `sim/` — the game. Integer-only, no nodes, no floats, no engine RNG, 1080 Hz fixed tick.

@@ -32,6 +32,7 @@ const POP_TICKS := 162 # 9 f: then pop one at a time, vanishing together at the 
 
 const ROW_UNITS := 6480 # one row per 6 s at base rise speed
 const RAISE_SPEED := 40 # manual raise multiplier
+const SPEEDUP_TICKS := 21600 # base rise speed +1 every 20 s of play, so games end
 const STOP_TICKS := 1080 # rise pauses this long after a combo or chain link
 
 const COUNTDOWN_TICKS := 3240 # 3 s; cursor moves, nothing else does

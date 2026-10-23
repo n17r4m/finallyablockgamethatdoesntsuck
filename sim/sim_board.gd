@@ -19,7 +19,8 @@ enum { NORMAL, SWAP_L, SWAP_R, HOVER, FALL, LAND, MATCHED }
 const STATE := ["color", "st", "tm", "aux", "chain", "gid", "next_row",
 	"cursor_x", "cursor_y", "prev_input", "hold", "rise", "stop_t", "health", "rng", "score", "lost",
 	"busy", "need_scan", "need_support", "has_matched", "chain_n",
-	"outbox", "gar_q", "gar_t", "gar_side", "next_gid", "fx_combo", "fx_chain", "fx_t"]
+	"outbox", "gar_q", "gar_t", "gar_side", "next_gid", "fx_combo", "fx_chain", "fx_t",
+	"age", "sent", "best_chain", "swaps"]
 
 # Per cell, row-major, y = 0 is the top of the hidden buffer.
 var color := PackedByteArray() # 0 empty, 1..COLORS panel, GARBAGE
@@ -56,6 +57,11 @@ var next_gid := 1
 var fx_combo := 0 # latest callouts for presentation
 var fx_chain := 0
 var fx_t := 0
+
+var age := 0 # live ticks; drives the rise speed-up
+var sent := 0 # garbage cells sent (stats)
+var best_chain := 1 # (stats)
+var swaps := 0 # (stats)
 
 
 static func create(game_seed: int) -> SimBoard:
@@ -97,6 +103,7 @@ func step(input: int, live := true) -> void:
 	if not live:
 		_handle_input(input & SimConst.DIRS)
 		return
+	age += 1
 	_handle_input(input)
 	if busy:
 		_update_cells()
@@ -177,6 +184,7 @@ func _try_swap() -> void:
 	var c := color[i]
 	color[i] = color[j]
 	color[j] = c
+	swaps += 1
 	for k: int in [i, j]:
 		st[k] = NORMAL
 		tm[k] = 0
@@ -394,11 +402,13 @@ func _scan() -> void:
 		if n >= 4:
 			for w: int in SimConst.COMBO_GARBAGE.get(n, [6, 6, 6]):
 				outbox.append(SimConst.slab(w, 1))
+				sent += w
 			fx_combo = n
 			score += (n - 3) * 20
 		if chained:
 			chain_n += 1
 			fx_chain = chain_n
+			best_chain = maxi(best_chain, chain_n)
 			score += 50 * (chain_n - 1)
 		if n >= 4 or chained:
 			stop_t = maxi(stop_t, SimConst.STOP_TICKS)
@@ -441,6 +451,7 @@ func _check_chain_end() -> void:
 		if chain[i] or (st[i] == MATCHED and gid[i] == 0):
 			return
 	outbox.append(SimConst.slab(W, mini(chain_n - 1, SimConst.BUF)))
+	sent += W * mini(chain_n - 1, SimConst.BUF)
 	chain_n = 1
 
 
@@ -495,7 +506,7 @@ func _rise(input: int) -> void:
 		stop_t -= 1
 		return
 	else:
-		rise += 1
+		rise += 1 + age / SimConst.SPEEDUP_TICKS
 	if rise >= SimConst.ROW_UNITS:
 		rise = rise - SimConst.ROW_UNITS if _push_row() else SimConst.ROW_UNITS
 

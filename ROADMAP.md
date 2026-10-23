@@ -28,7 +28,12 @@ Feature list below is from memory of Crack Attack; correct it where it's wrong.
   2. Fit a ranking SVM / logistic regression offline on league-logged (features, went-on-to-win)
      pairs; export the weights as a new style. Same dot product at runtime — free and deterministic.
   3. Only if those plateau: a small learned value net (would need inference outside GDScript).
-- Beam search for the top level (deterministic, prunes like alpha-beta's cutoff).
+- CPU searches in the ring: `stochastic`, `beam`, `flatmc` (see ai/cpu_player.gd). First ring
+  (30 games, hard): beam 1548, flatmc 1524, stochastic 1428 (Bradley-Terry); beam vs stochastic
+  8-2, CI still touches 50%. Open question: why noise helps so much (noise 0 loses 20-0; a flat
+  eagerness bonus doesn't replace it). The data march includes noise variants to map it.
+- Data march: `tools/league.gd --positions` logs (own features, opponent features, outcome) once
+  a second; `tools/league_report.py` gives Wilson CIs + ratings. Feeds step 2 above.
 - Demo/attract mode exists (`--demo`); use it for trailers and the title screen.
 - Rollback netcode with desync detection (done), spectators, replays (inputs are already a tiny log).
 - Matchmaking + ranking (droplix plans: signaling server, Elo).
