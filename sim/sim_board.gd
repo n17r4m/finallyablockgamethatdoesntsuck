@@ -1,244 +1,357 @@
 class_name SimBoard
 extends RefCounted
-## One player's well. Integer-only and allocation-light: it steps 1080x/s and
-## gets re-simulated during rollback, so keep the per-tick path cheap.
+## One player's well: Panel de Pon rules on an integer grid.
+##
+## Every cell runs a small state machine (swap / hover / fall / land / matched)
+## driven by tick timers. Nothing here is spatial beyond grid indices: sliding,
+## falling, swap depth and pops are derived from these timers by BoardView.
+## Steps 1080x/s and is re-simulated during rollback, so keep it lean.
 
 const W := SimConst.W
-const H := SimConst.H
+const ROWS := SimConst.ROWS
+const TOP := SimConst.BUF # first visible row
+const N := W * ROWS
 
-var cells := PackedByteArray() # 0 = empty, 1..COLORS; row-major, y = 0 is the top
-var clear_t := PackedInt32Array() # ticks until a matched cell vanishes, 0 = not clearing
-var gid := PackedInt32Array() # garbage slab id per cell, 0 = not garbage
+enum { NORMAL, SWAP_L, SWAP_R, HOVER, FALL, LAND, MATCHED }
+
+## Every field that is game state. copy() and checksum() walk this list, so a
+## field missing here silently breaks rollback — new state goes here.
+const STATE := ["color", "st", "tm", "aux", "chain", "gid", "next_row",
+	"cursor_x", "cursor_y", "prev_input", "hold", "rise", "stop_t", "rng", "score", "lost",
+	"busy", "need_scan", "need_support", "has_matched", "chain_n",
+	"outbox", "gar_q", "gar_t", "gar_side", "next_gid", "fx_combo", "fx_chain", "fx_t"]
+
+# Per cell, row-major, y = 0 is the top of the hidden buffer.
+var color := PackedByteArray() # 0 empty, 1..COLORS panel, GARBAGE
+var st := PackedByteArray() # state enum
+var tm := PackedInt32Array() # ticks left in the current state
+var aux := PackedInt32Array() # MATCHED: pop tick | flash-end tick << 16
+var chain := PackedByteArray() # 1 = falling because something under it cleared
+var gid := PackedInt32Array() # garbage slab id, 0 = panel
+var next_row := PackedByteArray() # rising in from below
+
 var cursor_x := 2 # cursor covers cursor_x and cursor_x + 1
-var cursor_y := 6
+var cursor_y := TOP + 6
 var prev_input := 0
 var hold := 0
 var rise := 0
-var fall_t := 0
-var unsettled := true # something moved; run gravity, then look for matches
-var clearing := 0
+var stop_t := 0
 var rng := 1
 var score := 0
 var lost := false
-var outbox := PackedByteArray() # garbage widths sent this tick; SimState delivers them
-var gar_q := PackedByteArray() # incoming garbage widths, head drops first
-var gar_t := 0 # ticks until the head of gar_q may drop
-var gar_side := 0 # alternate slabs left/right
+
+var busy := false # some cell is not NORMAL; run the per-cell update
+var need_scan := false # a panel came to rest; look for matches
+var need_support := false # a cell emptied; look for unsupported blocks
+var has_matched := false
+var chain_n := 1 # current chain length; 1 = no chain
+
+var outbox := PackedInt32Array() # slabs sent this tick; SimState delivers them
+var gar_q := PackedInt32Array() # incoming slabs, head drops first
+var gar_t := 0
+var gar_side := 0 # alternate narrow slabs left/right
 var next_gid := 1
+
+var fx_combo := 0 # latest callouts for presentation
+var fx_chain := 0
+var fx_t := 0
 
 
 static func create(game_seed: int) -> SimBoard:
 	var b := SimBoard.new()
-	b.cells.resize(W * H)
-	b.clear_t.resize(W * H)
-	b.gid.resize(W * H)
+	b.color.resize(N)
+	b.st.resize(N)
+	b.tm.resize(N)
+	b.aux.resize(N)
+	b.chain.resize(N)
+	b.gid.resize(N)
 	b.rng = (game_seed & 0xFFFFFFFF) | 1
-	for y in range(H - 5, H):
-		b._fill_row(y)
+	for y in range(ROWS - 5, ROWS):
+		var row := b._make_row(y - 1)
+		for x in W:
+			b.color[y * W + x] = row[x]
+	b.next_row = b._make_row(ROWS - 1)
 	return b
 
 
 func copy() -> SimBoard:
 	var b := SimBoard.new()
-	b.cells = cells.duplicate()
-	b.clear_t = clear_t.duplicate()
-	b.gid = gid.duplicate()
-	b.cursor_x = cursor_x
-	b.cursor_y = cursor_y
-	b.prev_input = prev_input
-	b.hold = hold
-	b.rise = rise
-	b.fall_t = fall_t
-	b.unsettled = unsettled
-	b.clearing = clearing
-	b.rng = rng
-	b.score = score
-	b.lost = lost
-	b.outbox = outbox.duplicate()
-	b.gar_q = gar_q.duplicate()
-	b.gar_t = gar_t
-	b.gar_side = gar_side
-	b.next_gid = next_gid
+	for f: String in STATE:
+		var v: Variant = get(f)
+		b.set(f, v.duplicate() if typeof(v) >= TYPE_PACKED_BYTE_ARRAY else v)
 	return b
 
 
 func checksum() -> int:
-	return hash([cells, clear_t, cursor_x, cursor_y, prev_input, hold, rise, fall_t,
-			unsettled, clearing, rng, score, lost, gid, outbox, gar_q, gar_t, gar_side, next_gid])
+	var vals := []
+	for f: String in STATE:
+		vals.append(get(f))
+	return hash(vals)
 
 
 func step(input: int) -> void:
 	if lost:
 		return
+	_handle_input(input)
+	if busy:
+		_update_cells()
+	else:
+		has_matched = false
+	if need_support:
+		_apply_support()
+	if need_scan:
+		_scan()
+	if chain_n > 1:
+		_check_chain_end()
+	_feed_garbage()
+	_rise(input)
+	if fx_t > 0:
+		fx_t -= 1
+
+
+func receive_garbage(slabs: PackedInt32Array) -> void:
+	if gar_q.is_empty():
+		gar_t = SimConst.GARBAGE_DELAY
+	gar_q.append_array(slabs)
+
+
+## Test/puzzle helper: place a resting panel; row 0 is the bottom visible row.
+func put(x: int, row: int, c: int) -> void:
+	var i := (ROWS - 1 - row) * W + x
+	_clear_cell(i)
+	color[i] = c
+	need_scan = true
+	need_support = true
+
+
+func clear_all() -> void:
+	for i in N:
+		_clear_cell(i)
+
+
+# --- input ------------------------------------------------------------------
+
+func _handle_input(input: int) -> void:
 	var pressed := input & ~prev_input
 	var dir := input & SimConst.DIRS
 	if dir != 0 and dir == prev_input & SimConst.DIRS:
 		hold += 1
 		if hold >= SimConst.REPEAT_DELAY and (hold - SimConst.REPEAT_DELAY) % SimConst.REPEAT_RATE == 0:
-			_move(dir)
+			_move_cursor(dir)
 	else:
 		hold = 0
 		if dir != 0:
-			_move(dir)
+			_move_cursor(dir)
 	prev_input = input
-
 	if pressed & SimConst.SWAP:
-		_swap()
-	if clearing > 0:
-		_tick_clears()
-	if gar_q.size() > 0:
-		if gar_t > 0:
-			gar_t -= 1
-		elif clearing == 0 and _drop_garbage(gar_q[0]):
-			gar_q.remove_at(0)
-			gar_t = SimConst.GARBAGE_DELAY / 4
-
-	fall_t += 1
-	if fall_t >= SimConst.FALL_TICKS:
-		fall_t = 0
-		if unsettled and not _gravity_step():
-			unsettled = false
-			_scan_matches()
-
-	if clearing == 0 and not unsettled:
-		rise += SimConst.RAISE_SPEED if input & SimConst.RAISE else 1
-		if rise >= SimConst.ROW_UNITS:
-			rise -= SimConst.ROW_UNITS
-			_push_row()
+		_try_swap()
 
 
-func receive_garbage(widths: PackedByteArray) -> void:
-	if gar_q.is_empty():
-		gar_t = SimConst.GARBAGE_DELAY
-	gar_q.append_array(widths)
-
-
-## Spawns a slab in the top row. Waits (returns false) while that spot is occupied.
-func _drop_garbage(w: int) -> bool:
-	var x0 := 0 if gar_side == 0 else W - w
-	for x in range(x0, x0 + w):
-		if cells[x] != 0:
-			return false
-	for x in range(x0, x0 + w):
-		cells[x] = SimConst.GARBAGE
-		gid[x] = next_gid
-	next_gid += 1
-	gar_side ^= 1
-	unsettled = true
-	return true
-
-
-func _move(dir: int) -> void:
+func _move_cursor(dir: int) -> void:
 	if dir & SimConst.UP:
-		cursor_y = maxi(cursor_y - 1, 0)
+		cursor_y = maxi(cursor_y - 1, TOP)
 	if dir & SimConst.DOWN:
-		cursor_y = mini(cursor_y + 1, H - 1)
+		cursor_y = mini(cursor_y + 1, ROWS - 1)
 	if dir & SimConst.LEFT:
 		cursor_x = maxi(cursor_x - 1, 0)
 	if dir & SimConst.RIGHT:
 		cursor_x = mini(cursor_x + 1, W - 2)
 
 
-func _swap() -> void:
+func _try_swap() -> void:
 	var i := cursor_y * W + cursor_x
-	if (cells[i] | cells[i + 1]) == 0 or clear_t[i] or clear_t[i + 1] or gid[i] or gid[i + 1]:
+	var j := i + 1
+	if color[i] == 0 and color[j] == 0:
 		return
-	var c := cells[i]
-	cells[i] = cells[i + 1]
-	cells[i + 1] = c
-	unsettled = true
+	for k: int in [i, j]:
+		if color[k] != 0 and (gid[k] != 0 or not _resting(k)):
+			return
+		# Don't slide into a gap something is about to fall into.
+		if color[k] == 0 and k >= W and color[k - W] != 0 and (st[k - W] == HOVER or st[k - W] == FALL):
+			return
+	var c := color[i]
+	color[i] = color[j]
+	color[j] = c
+	for k: int in [i, j]:
+		st[k] = NORMAL
+		tm[k] = 0
+		chain[k] = 0
+	if color[j] != 0:
+		_set_state(j, SWAP_R, SimConst.SWAP_TICKS) # arrived from the left
+	if color[i] != 0:
+		_set_state(i, SWAP_L, SimConst.SWAP_TICKS) # arrived from the right
 
 
-func _tick_clears() -> void:
-	for i in W * H:
-		if clear_t[i] > 0:
-			clear_t[i] -= 1
-			if clear_t[i] == 0:
-				cells[i] = 0
-				clearing -= 1
-				unsettled = true
+# --- per-cell update ----------------------------------------------------------
 
-
-## Drops every unsupported block one cell; garbage slabs fall only as a whole.
-## Returns whether anything moved.
-func _gravity_step() -> bool:
-	var moved := false
-	for y in range(H - 2, -1, -1):
-		var x := 0
-		while x < W:
+func _update_cells() -> void:
+	busy = false
+	has_matched = false
+	var done := PackedInt32Array() # slabs already handled this tick
+	for y in range(ROWS - 1, -1, -1): # bottom-up so columns move together
+		for x in W:
 			var i := y * W + x
+			if color[i] == 0 or st[i] == NORMAL:
+				continue
+			busy = true
 			if gid[i] != 0:
-				var w := _slab_width(i)
-				var free := true
+				if not done.has(gid[i]):
+					done.append(gid[i])
+					_update_slab(i) # first hit is the slab's bottom-left cell
+				continue
+			match st[i]:
+				SWAP_L, SWAP_R:
+					tm[i] -= 1
+					if tm[i] == 0:
+						st[i] = NORMAL
+						need_scan = true
+						need_support = true
+				LAND:
+					tm[i] -= 1
+					if tm[i] == 0:
+						st[i] = NORMAL
+				HOVER:
+					tm[i] -= 1
+					if tm[i] == 0:
+						st[i] = FALL
+						tm[i] = SimConst.FALL_TICKS
+				FALL:
+					_fall(i)
+				MATCHED:
+					has_matched = true
+					tm[i] -= 1
+					if tm[i] == 0:
+						_vanish(i)
+
+
+func _fall(i: int) -> void:
+	var b := i + W
+	if b < N and color[b] == 0:
+		tm[i] -= 1
+		if tm[i] <= 0:
+			_move(i, b)
+			tm[b] = SimConst.FALL_TICKS
+	elif b < N and (st[b] == FALL or st[b] == HOVER):
+		tm[i] = maxi(tm[i] - 1, 1) # follow the block below as soon as it moves
+	else:
+		st[i] = LAND
+		tm[i] = SimConst.LAND_TICKS
+		need_scan = true
+
+
+## A matched panel disappears; everything stacked on it becomes chain material.
+func _vanish(i: int) -> void:
+	_clear_cell(i)
+	var j := i - W
+	while j >= 0 and color[j] != 0 and gid[j] == 0 and _resting(j):
+		chain[j] = 1
+		j -= W
+	need_support = true
+
+
+func _update_slab(i: int) -> void:
+	var r := _slab_rect(i)
+	var x0 := r[0]
+	var y0 := r[1]
+	var w := r[2]
+	var h := r[3]
+	var y1 := y0 + h - 1
+	match st[i]:
+		HOVER:
+			if _slab_tick(r) == 0:
+				_slab_set(r, FALL, SimConst.FALL_TICKS)
+		FALL:
+			var rest := y1 + 1 >= ROWS
+			var moving := false
+			if not rest:
 				for k in w:
-					if cells[i + W + k] != 0:
-						free = false
-						break
-				if free:
+					var c := (y1 + 1) * W + x0 + k
+					if color[c] != 0:
+						if st[c] == FALL or st[c] == HOVER:
+							moving = true
+						else:
+							rest = true
+			if rest:
+				_slab_set(r, NORMAL, 0)
+			elif moving:
+				_slab_set(r, FALL, maxi(tm[i] - 1, 1))
+			elif _slab_tick(r) <= 0:
+				for y in range(y1, y0 - 1, -1):
 					for k in w:
-						cells[i + W + k] = cells[i + k]
-						gid[i + W + k] = gid[i + k]
-						cells[i + k] = 0
-						gid[i + k] = 0
-					moved = true
-				x += w
+						_move(y * W + x0 + k, (y + 1) * W + x0 + k)
+				_slab_set(PackedInt32Array([x0, y0 + 1, w, h]), FALL, SimConst.FALL_TICKS)
+		MATCHED:
+			has_matched = true
+			if _slab_tick(r) == 0:
+				# Bottom row becomes panels (which may chain); the rest shrinks back to garbage.
+				for k in w:
+					var c := y1 * W + x0 + k
+					_clear_cell(c)
+					color[c] = _rand() % SimConst.COLORS + 1
+					chain[c] = 1
+				if h > 1:
+					_slab_set(PackedInt32Array([x0, y0, w, h - 1]), NORMAL, 0)
+				need_scan = true
+				need_support = true
+
+
+# --- support / gravity ---------------------------------------------------------
+
+func _apply_support() -> void:
+	need_support = false
+	var done := PackedInt32Array()
+	for y in range(ROWS - 1, -1, -1):
+		for x in W:
+			var i := y * W + x
+			if color[i] == 0:
 				continue
-			if cells[i] != 0 and clear_t[i] == 0 and cells[i + W] == 0:
-				cells[i + W] = cells[i]
-				cells[i] = 0
-				moved = true
-			x += 1
-	return moved
-
-
-## Width of the slab whose leftmost cell is i (slabs are one row tall).
-func _slab_width(i: int) -> int:
-	var w := 1
-	while (i + w) % W != 0 and gid[i + w] == gid[i]:
-		w += 1
-	return w
-
-
-## Turns every garbage slab touching a matched cell back into random blocks,
-## spreading through slabs that touch each other.
-func _convert_garbage(mark: PackedByteArray) -> void:
-	var todo := PackedInt32Array()
-	for i in W * H:
-		if mark[i]:
-			todo.append(i)
-	var seen := PackedInt32Array() # gids already converted
-	while not todo.is_empty():
-		var i := todo[-1]
-		todo.remove_at(todo.size() - 1)
-		var x := i % W
-		for j in [i - W if i >= W else -1, i + W if i + W < W * H else -1,
-				i - 1 if x > 0 else -1, i + 1 if x < W - 1 else -1]:
-			if j < 0 or gid[j] == 0 or seen.has(gid[j]):
+			if gid[i] != 0:
+				if not done.has(gid[i]):
+					done.append(gid[i])
+					_support_slab(i)
 				continue
-			var g: int = gid[j]
-			seen.append(g)
-			var start: int = j
-			while start % W > 0 and gid[start - 1] == g:
-				start -= 1
-			for k in _slab_width(start):
-				cells[start + k] = _rand() % SimConst.COLORS + 1
-				gid[start + k] = 0
-				todo.append(start + k)
-				unsettled = true
+			var b := i + W
+			if b >= N or not _resting(i):
+				continue
+			if color[b] == 0:
+				_set_state(i, HOVER, SimConst.HOVER_TICKS)
+			elif st[b] == HOVER or st[b] == FALL:
+				_set_state(i, st[b], tm[b]) # join the column below so it moves as one
 
 
-func _matchable(i: int) -> bool:
-	return cells[i] != 0 and clear_t[i] == 0 and gid[i] == 0
+func _support_slab(i: int) -> void:
+	if st[i] != NORMAL:
+		return
+	var r := _slab_rect(i)
+	var below := (r[1] + r[3]) * W + r[0]
+	if below >= N:
+		return
+	var join := -1
+	for k in r[2]:
+		var c := below + k
+		if color[c] == 0:
+			continue
+		if st[c] == HOVER or st[c] == FALL:
+			join = c
+		else:
+			return # resting on something
+	if join < 0:
+		_slab_set(r, HOVER, SimConst.HOVER_TICKS)
+	else:
+		_slab_set(r, st[join], tm[join])
 
 
-func _scan_matches() -> void:
+# --- matching -----------------------------------------------------------------
+
+func _scan() -> void:
+	need_scan = false
 	var mark := PackedByteArray()
-	mark.resize(W * H)
-	for y in H:
+	mark.resize(N)
+	for y in ROWS:
 		var run := 1
 		for x in range(1, W + 1):
 			var i := y * W + x
-			if x < W and _matchable(i) and _matchable(i - 1) and cells[i] == cells[i - 1]:
+			if x < W and _matchable(i) and _matchable(i - 1) and color[i] == color[i - 1]:
 				run += 1
 			else:
 				if run >= 3:
@@ -247,57 +360,245 @@ func _scan_matches() -> void:
 				run = 1
 	for x in W:
 		var run := 1
-		for y in range(1, H + 1):
+		for y in range(1, ROWS + 1):
 			var i := y * W + x
-			if y < H and _matchable(i) and _matchable(i - W) and cells[i] == cells[i - W]:
+			if y < ROWS and _matchable(i) and _matchable(i - W) and color[i] == color[i - W]:
 				run += 1
 			else:
 				if run >= 3:
 					for k in run:
 						mark[i - W - k * W] = 1
 				run = 1
-	var n := 0
-	for i in W * H:
+
+	var idx := PackedInt32Array()
+	var chained := false
+	for i in N:
 		if mark[i]:
-			clear_t[i] = SimConst.CLEAR_TICKS
-			n += 1
-	if n == 0:
-		return
-	clearing += n
-	score += n * 10 + maxi(n - 3, 0) * 20
-	_convert_garbage(mark)
-	if n >= 4:
-		outbox.append_array(PackedByteArray(SimConst.COMBO_GARBAGE.get(n, [6, 6, 6])))
+			idx.append(i)
+			chained = chained or chain[i] == 1
+	var n := idx.size()
+	if n > 0:
+		var pops := SimConst.POP_TICKS * n
+		var total := SimConst.FLASH_TICKS + pops
+		for k in n:
+			_set_state(idx[k], MATCHED, total)
+			aux[idx[k]] = SimConst.POP_TICKS * (n - 1 - k) | (pops << 16)
+			chain[idx[k]] = 0
+		has_matched = true
+		score += n * 10
+		if n >= 4:
+			for w: int in SimConst.COMBO_GARBAGE.get(n, [6, 6, 6]):
+				outbox.append(SimConst.slab(w, 1))
+			fx_combo = n
+			score += (n - 3) * 20
+		if chained:
+			chain_n += 1
+			fx_chain = chain_n
+			score += 50 * (chain_n - 1)
+		if n >= 4 or chained:
+			stop_t = maxi(stop_t, SimConst.STOP_TICKS)
+			fx_t = SimConst.FX_TICKS
+		_convert_touching(idx, total)
+	# Anything that came to rest without matching is no longer part of a chain.
+	for i in N:
+		if chain[i] and _resting(i):
+			chain[i] = 0
 
 
-func _push_row() -> void:
-	for x in W:
-		if cells[x] != 0:
-			lost = true
+## Garbage touching a match (and garbage touching that, transitively) starts converting.
+func _convert_touching(matched: PackedInt32Array, total: int) -> void:
+	var todo := matched.duplicate()
+	var seen := PackedInt32Array()
+	var cells := PackedInt32Array()
+	while not todo.is_empty():
+		var i := todo[-1]
+		todo.remove_at(todo.size() - 1)
+		var x := i % W
+		for j: int in [i - W if i >= W else -1, i + W if i + W < N else -1,
+				i - 1 if x > 0 else -1, i + 1 if x < W - 1 else -1]:
+			if j < 0 or gid[j] == 0 or seen.has(gid[j]) or st[j] != NORMAL:
+				continue
+			seen.append(gid[j])
+			var r := _slab_rect(j)
+			for y in range(r[1], r[1] + r[3]):
+				for k in r[2]:
+					cells.append(y * W + r[0] + k)
+					todo.append(y * W + r[0] + k)
+	var n := cells.size()
+	var pops := SimConst.POP_TICKS * n
+	for k in n:
+		_set_state(cells[k], MATCHED, total + pops)
+		aux[cells[k]] = SimConst.POP_TICKS * (n - 1 - k) | (pops << 16)
+
+
+func _check_chain_end() -> void:
+	for i in N:
+		if chain[i] or (st[i] == MATCHED and gid[i] == 0):
 			return
-	cells = cells.slice(W)
-	cells.resize(W * H)
-	clear_t = clear_t.slice(W)
-	clear_t.resize(W * H)
-	gid = gid.slice(W)
-	gid.resize(W * H)
-	_fill_row(H - 1)
-	cursor_y = maxi(cursor_y - 1, 0)
-	unsettled = true
+	outbox.append(SimConst.slab(W, mini(chain_n - 1, SimConst.BUF)))
+	chain_n = 1
 
 
-## Random row with no horizontal or vertical triples against the rows above.
-func _fill_row(y: int) -> void:
+# --- garbage in, rise ---------------------------------------------------------
+
+func _feed_garbage() -> void:
+	if gar_q.is_empty():
+		return
+	if gar_t > 0:
+		gar_t -= 1
+	elif not has_matched and chain_n == 1 and _drop_garbage(gar_q[0]):
+		gar_q.remove_at(0)
+		gar_t = SimConst.GARBAGE_GAP
+
+
+## Spawns a slab at the top of the hidden buffer. Waits while that spot is occupied.
+func _drop_garbage(slab: int) -> bool:
+	var w := slab % 8
+	var h := slab / 8
+	var x0 := 0 if gar_side == 0 else W - w
+	for y in h:
+		for x in range(x0, x0 + w):
+			if color[y * W + x] != 0:
+				return false
+	for y in h:
+		for x in range(x0, x0 + w):
+			var c := y * W + x
+			color[c] = SimConst.GARBAGE
+			gid[c] = next_gid
+			_set_state(c, FALL, SimConst.FALL_TICKS)
+	next_gid += 1
+	gar_side ^= 1
+	return true
+
+
+func _rise(input: int) -> void:
+	if has_matched:
+		return
+	if input & SimConst.RAISE:
+		stop_t = 0
+		rise += SimConst.RAISE_SPEED
+	elif stop_t > 0:
+		stop_t -= 1
+		return
+	else:
+		rise += 1
+	if rise >= SimConst.ROW_UNITS:
+		rise = rise - SimConst.ROW_UNITS if _push_row() else SimConst.ROW_UNITS
+
+
+func _push_row() -> bool:
 	for x in W:
-		var i := y * W + x
+		if color[x] != 0:
+			return false # buffer is full to the brim; hold the stack until it drains
+	for x in W:
+		var i := TOP * W + x
+		if color[i] != 0 and st[i] != FALL and st[i] != HOVER:
+			lost = true
+			return false
+	color = color.slice(W)
+	color.resize(N)
+	st = st.slice(W)
+	st.resize(N)
+	tm = tm.slice(W)
+	tm.resize(N)
+	aux = aux.slice(W)
+	aux.resize(N)
+	chain = chain.slice(W)
+	chain.resize(N)
+	gid = gid.slice(W)
+	gid.resize(N)
+	for x in W:
+		color[(ROWS - 1) * W + x] = next_row[x]
+	next_row = _make_row(ROWS - 1)
+	cursor_y = maxi(cursor_y - 1, TOP)
+	need_scan = true
+	return true
+
+
+# --- helpers ------------------------------------------------------------------
+
+func _resting(i: int) -> bool:
+	return st[i] == NORMAL or st[i] == LAND
+
+
+func _matchable(i: int) -> bool:
+	return color[i] != 0 and color[i] <= SimConst.COLORS and _resting(i)
+
+
+func _set_state(i: int, s: int, t: int) -> void:
+	st[i] = s
+	tm[i] = t
+	busy = true
+
+
+func _clear_cell(i: int) -> void:
+	color[i] = 0
+	st[i] = NORMAL
+	tm[i] = 0
+	aux[i] = 0
+	chain[i] = 0
+	gid[i] = 0
+
+
+func _move(from: int, to: int) -> void:
+	color[to] = color[from]
+	st[to] = st[from]
+	tm[to] = tm[from]
+	aux[to] = aux[from]
+	chain[to] = chain[from]
+	gid[to] = gid[from]
+	_clear_cell(from)
+
+
+## [x0, y0, w, h] of the (rectangular) slab containing cell i.
+func _slab_rect(i: int) -> PackedInt32Array:
+	var g := gid[i]
+	var x0 := i % W
+	var y0 := i / W
+	while x0 > 0 and gid[y0 * W + x0 - 1] == g:
+		x0 -= 1
+	while y0 > 0 and gid[(y0 - 1) * W + x0] == g:
+		y0 -= 1
+	var w := 1
+	while x0 + w < W and gid[y0 * W + x0 + w] == g:
+		w += 1
+	var h := 1
+	while y0 + h < ROWS and gid[(y0 + h) * W + x0] == g:
+		h += 1
+	return PackedInt32Array([x0, y0, w, h])
+
+
+func _slab_set(r: PackedInt32Array, s: int, t: int) -> void:
+	for y in range(r[1], r[1] + r[3]):
+		for k in r[2]:
+			_set_state(y * W + r[0] + k, s, t)
+
+
+## Decrements every cell's timer in the slab; returns the new value.
+func _slab_tick(r: PackedInt32Array) -> int:
+	var t := 0
+	for y in range(r[1], r[1] + r[3]):
+		for k in r[2]:
+			var c := y * W + r[0] + k
+			tm[c] -= 1
+			t = tm[c]
+	return t
+
+
+## A row of panels with no triples against itself or the two rows from `above` up.
+func _make_row(above: int) -> PackedByteArray:
+	var row := PackedByteArray()
+	row.resize(W)
+	for x in W:
 		var c := 0
 		while true:
 			c = _rand() % SimConst.COLORS + 1
-			var h := x >= 2 and cells[i - 1] == c and cells[i - 2] == c
-			var v := y >= 2 and cells[i - W] == c and cells[i - 2 * W] == c
+			var h := x >= 2 and row[x - 1] == c and row[x - 2] == c
+			var v := above >= 1 and color[above * W + x] == c and color[(above - 1) * W + x] == c
 			if not (h or v):
 				break
-		cells[i] = c
+		row[x] = c
+	return row
 
 
 func _rand() -> int: # xorshift32, kept in the low 32 bits of a 64-bit int

@@ -17,10 +17,7 @@ func _init() -> void:
 	var b := RollbackSession.new(game_seed, 1, delay)
 	# Pre-seed identical 5-combos on every board so garbage crosses the link under rollback.
 	for st: SimState in [a.state, b.state]:
-		for board in st.boards:
-			for c in [[0, 11], [1, 11], [2, 11], [0, 10], [0, 9]]:
-				board.cells[c[1] * SimConst.W + c[0]] = 6
-			board.unsettled = true
+		_seed_combo(st)
 	var desyncs := [0]
 	var frame := [0]
 	var lossy := [true]
@@ -69,10 +66,7 @@ func _init() -> void:
 		b.advance(maxi(target - b.state.tick, 0))
 
 	var replay := SimState.create(game_seed)
-	for board in replay.boards:
-		for c in [[0, 11], [1, 11], [2, 11], [0, 10], [0, 9]]:
-			board.cells[c[1] * SimConst.W + c[0]] = 6
-		board.unsettled = true
+	_seed_combo(replay)
 	while replay.tick < target:
 		replay.step(a.input_at(0, replay.tick), a.input_at(1, replay.tick))
 
@@ -80,8 +74,10 @@ func _init() -> void:
 	print("ticks a=%d b=%d target=%d  scores %d/%d  desyncs=%d" % [a.state.tick, b.state.tick,
 			target, replay.boards[0].score, replay.boards[1].score, desyncs[0]])
 	print("garbage slabs dropped: %d / %d" % [replay.boards[0].next_gid - 1, replay.boards[1].next_gid - 1])
-	print("%.2f us per sim tick (incl. resim) -> %.1f%% of a 60fps frame at 1080 Hz" % [
-			float(usec) / ticks_run, float(usec) / ticks_run * 1080.0 / 16667.0 * 100.0])
+	var per_tick := float(usec) / ticks_run
+	var worst := RollbackSession.MAX_AHEAD + TPF # deepest rewind plus a normal frame
+	print("%.2f us/tick: normal frame (%d ticks) %.2f ms, worst rollback frame (%d ticks) %.2f ms of 16.7" % [
+			per_tick, TPF, per_tick * TPF / 1000.0, worst, per_tick * worst / 1000.0])
 	var ok: bool = (desyncs[0] == 0 and a.state.tick == target and b.state.tick == target
 			and a.state.checksum() == b.state.checksum()
 			and a.state.checksum() == replay.checksum()
@@ -99,3 +95,10 @@ func _deliver(queue: Array, s: RollbackSession, f: int) -> void:
 			queue.remove_at(i)
 		else:
 			i += 1
+
+
+## An L-shaped 5-combo over each board's bottom-left corner.
+func _seed_combo(st: SimState) -> void:
+	for board in st.boards:
+		for c in [[0, 0], [1, 0], [2, 0], [0, 1], [0, 2]]:
+			board.put(c[0], c[1], 1)

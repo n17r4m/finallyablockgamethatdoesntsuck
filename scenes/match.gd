@@ -1,16 +1,14 @@
 extends Node2D
-## Drives the RollbackSession from the wall clock and draws it. Placeholder art
-## via _draw — the sim never touches nodes, so real visuals can replace this freely.
+## Drives the RollbackSession from the wall clock. Boards are drawn by renderers
+## that read BoardView only, so swapping in 3D touches nothing here but _ready.
 
-const CELL := 40
-const PALETTE: Array[Color] = [Color.BLACK, Color("e04f5f"), Color("4fc46a"), Color("4f8fe0"),
-		Color("e8c547"), Color("a35fd6")]
 
 var session: RollbackSession
 var _offline := false
 var _ended := ""
 var _acc := 0 # tick-units * 1e6, so no float drift
 var _last_usec := 0
+var _views: Array[BoardRenderer2D] = []
 
 
 func _ready() -> void:
@@ -23,6 +21,12 @@ func _ready() -> void:
 		session.outgoing.connect(Net.send)
 		Net.packet.connect(session.receive)
 		Net.opponent_left.connect(_on_opponent_left)
+	for p in 2:
+		var v := BoardRenderer2D.new()
+		v.position = Vector2(280 + p * 480, 120)
+		v.label = "YOU" if p == Net.local_idx else ("—" if _offline else "THEM")
+		add_child(v)
+		_views.append(v)
 	_last_usec = Time.get_ticks_usec()
 
 
@@ -45,42 +49,14 @@ func _process(_delta: float) -> void:
 	if _ended == "":
 		session.set_local_input(Controls.sample())
 		session.advance(due)
+	for p in 2:
+		_views[p].board = session.state.boards[p]
 	queue_redraw()
 
 
 func _draw() -> void:
 	var font := ThemeDB.fallback_font
-	var s := session.state
-	for p in 2:
-		var b := s.boards[p]
-		var origin := Vector2(280 + p * 480, 140)
-		var rise_px := float(b.rise) / SimConst.ROW_UNITS * CELL
-		draw_rect(Rect2(origin, Vector2(SimConst.W, SimConst.H) * CELL), Color(0.08, 0.08, 0.12))
-		for y in SimConst.H:
-			for x in SimConst.W:
-				var i := y * SimConst.W + x
-				if b.cells[i] == 0:
-					continue
-				var r := Rect2(origin + Vector2(x * CELL, y * CELL - rise_px), Vector2(CELL, CELL)).grow(-2)
-				if b.gid[i] != 0:
-					# Bridge the gap to the right neighbour so a slab reads as one piece.
-					if x < SimConst.W - 1 and b.gid[i + 1] == b.gid[i]:
-						r.size.x += 4
-					draw_rect(r, Color("8a8f9e"))
-					continue
-				var c := PALETTE[b.cells[i]]
-				if b.clear_t[i] > 0 and (b.clear_t[i] / 54) % 2 == 0:
-					c = Color.WHITE
-				draw_rect(r, c)
-		var cur := Rect2(origin + Vector2(b.cursor_x * CELL, b.cursor_y * CELL - rise_px), Vector2(CELL * 2, CELL))
-		draw_rect(cur, Color.WHITE, false, 3.0)
-		var who := "YOU" if p == session.local_idx else ("—" if _offline else "THEM")
-		draw_string(font, origin + Vector2(0, -16), "%s   %d%s" % [who, b.score, "   TOPPED OUT" if b.lost else ""],
-				HORIZONTAL_ALIGNMENT_LEFT, -1, 20)
-		if not b.gar_q.is_empty():
-			draw_string(font, origin + Vector2(0, -40), "incoming " + " ".join(Array(b.gar_q).map(str)),
-					HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color("8a8f9e"))
-	var hud := "tick %d   %d Hz" % [s.tick, SimConst.TICK_HZ]
+	var hud := "tick %d   %d Hz" % [session.state.tick, SimConst.TICK_HZ]
 	if not _offline:
 		hud += "   rtt %d ms   rollbacks %d   resim %d   stalls %d" % [Net.rtt_ms, session.stats.rollbacks,
 				session.stats.resim, session.stats.stalls]
