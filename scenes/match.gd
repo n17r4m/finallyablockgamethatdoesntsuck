@@ -33,6 +33,9 @@ func _ready() -> void:
 		_build_2d()
 	else:
 		_build_3d()
+	Controls.reset_touch()
+	if not _pilot:
+		Controls.board_mapper = _views[Net.local_idx].screen_to_cell
 	_last_usec = Time.get_ticks_usec()
 
 
@@ -86,6 +89,8 @@ func _label(p: int) -> String:
 
 
 func _exit_tree() -> void:
+	Controls.board_mapper = Callable()
+	Controls.reset_touch()
 	if Net.packet.is_connected(session.receive):
 		Net.packet.disconnect(session.receive)
 
@@ -106,7 +111,9 @@ func _process(delta: float) -> void:
 	_acc = mini(_acc - due * 1_000_000, 1_000_000)
 	if _ended == "":
 		var me := session.local_idx
-		session.set_local_input(_pilot.next_input(session.state.boards[me]) if _pilot else Controls.sample())
+		var my_board := session.state.boards[me]
+		if session.input_open():
+			session.set_local_input(_pilot.next_input(my_board) if _pilot else Controls.sample(my_board))
 		if _cpu:
 			session.set_remote_input(_cpu.next_input(session.state.boards[1 - me]))
 		session.advance(due)
@@ -129,7 +136,7 @@ func _draw() -> void:
 		hud += "   rtt %d ms   rollbacks %d   resim %d   stalls %d" % [Net.rtt_ms, session.stats.rollbacks,
 				session.stats.resim, session.stats.stalls]
 	draw_string(font, Vector2(20, 30), hud, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1, 1, 1, 0.5))
-	draw_string(font, Vector2(20, 700), "arrows/WASD move · space/X swap · C/shift raise · esc leave",
+	draw_string(font, Vector2(20, 700), "arrows/WASD move · space/X swap · C/shift raise · or drag blocks · esc leave",
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1, 1, 1, 0.4))
 
 	var big := ""

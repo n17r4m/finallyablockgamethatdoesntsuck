@@ -45,6 +45,12 @@ func _init(game_seed: int, idx: int, delay_ticks: int, offline := false, solo :=
 		remote_frontier = NEVER
 
 
+## Whether set_local_input would record anything this frame (false while stalled).
+## Sample stateful input (touch drags) only when this is true, or it gets lost.
+func input_open() -> bool:
+	return state.tick + input_delay > _ticks[local_idx][-1]
+
+
 ## Call once per frame before advance(). The first sample for a given target
 ## tick wins, so a frontier we've already sent is never contradicted.
 func set_local_input(mask: int) -> void:

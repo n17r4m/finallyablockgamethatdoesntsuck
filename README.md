@@ -7,9 +7,11 @@ Panel-de-Pon-style 1v1 versus, Godot 4.7, pure GDScript, rollback netcode.
 - Two local clients: `tools/duo.sh` (host + join on 127.0.0.1).
 - Launch args (after `--`): `--host`, `--join=ADDR`, `--practice` (endless solo),
   `--cpu=NAME[:LEVEL]` (e.g. `--cpu=Architect:hard`), `--demo[=NAME[:LEVEL]]` (CPU vs CPU, loops).
+- Controls: keyboard (arrows/WASD, space/X swap, C/shift raise), gamepad (d-pad, A/B, shoulders), and
+  touch/mouse: drag a block sideways to carry it, tap to move the cursor, hold the rising row to raise.
 - Renderer: `[video] renderer="3d"` (default) or `"2d"` in `user://settings.cfg`.
 - Record footage: `godot --path . --write-movie out.avi --fixed-fps 60 -- --practice` (sim follows movie time).
-- Tests (both must print PASS): `godot --headless --path . -s tests/test_sim.gd` (game rules) `-s tests/test_netcode.gd` (lossy-link rollback soak), `-s tests/test_cpu.gd` (CPU sanity, slow).
+- Tests (both must print PASS): `godot --headless --path . -s tests/test_sim.gd` (game rules) `-s tests/test_netcode.gd` (lossy-link rollback soak), `-s tests/test_touch.gd` (touch controls), `-s tests/test_cpu.gd` (CPU sanity, slow).
 - CPU league (logs to `data/`, gitignored): `nice -n 19 godot --headless --path . -s tools/league.gd --
   --agents=beam/balanced/hard,flatmc/chainer/hard,Architect:max --games=10 --out=data/run1 [--positions]`,
   then `python3 tools/league_report.py data/run1`.

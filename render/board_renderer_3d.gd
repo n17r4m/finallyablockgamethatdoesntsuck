@@ -122,6 +122,25 @@ func _process(delta: float) -> void:
 	_warning.text = "  ".join(warn)
 
 
+## Screen point -> Vector2i(column, visible row from the top); row H is the rising
+## row below the stack. Casts through the camera onto the board's plane.
+func screen_to_cell(screen: Vector2) -> Vector2i:
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		return Vector2i(-1, -1)
+	var inv := global_transform.affine_inverse()
+	var o := inv * cam.project_ray_origin(screen)
+	var d := inv.basis * cam.project_ray_normal(screen)
+	if absf(d.z) < 1e-6:
+		return Vector2i(-1, -1)
+	var hit := o + d * (-o.z / d.z)
+	var col := roundi(hit.x + W / 2.0 - 0.5)
+	var row := roundi(H / 2.0 - 0.5 - hit.y + BoardView.lift(board)) if board else -1
+	if col < 0 or col >= W or row < 0 or row > H:
+		return Vector2i(-1, -1)
+	return Vector2i(col, row)
+
+
 ## BoardView cell space (y down from the top visible row) -> local 3D (y up, centred).
 func _to3d(p: Vector3) -> Vector3:
 	return Vector3(p.x - W / 2.0 + 0.5, H / 2.0 - 0.5 - p.y, p.z)

@@ -19,6 +19,9 @@ const RIGHT := 8
 const SWAP := 16
 const RAISE := 32
 const DIRS := UP | DOWN | LEFT | RIGHT
+# Absolute cursor placement (touch/mouse): flag + left cell x (3 bits) + visible row y (4 bits).
+const TARGET := 1 << 16
+const TARGET_MASK := TARGET | (0x7 << 8) | (0xF << 12)
 
 const REPEAT_DELAY := 180 # ~167 ms before cursor auto-repeat
 const REPEAT_RATE := 54 # ~50 ms per repeat step
@@ -55,6 +58,11 @@ const FX_TICKS := 1080 # how long combo/chain callouts stay up
 const COMBO_GARBAGE := {
 	4: [3], 5: [4], 6: [5], 7: [6], 8: [3, 4], 9: [4, 4], 10: [5, 5], 11: [5, 6], 12: [6, 6],
 }
+
+
+## Input bits that put the cursor's left cell at (x, visible row y from the top).
+static func target(x: int, y: int) -> int:
+	return TARGET | (clampi(x, 0, W - 2) << 8) | (clampi(y, 0, H - 1) << 12)
 
 
 ## Garbage slabs travel as one int: width + height * 8.

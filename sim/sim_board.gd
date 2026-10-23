@@ -110,7 +110,7 @@ func step(input: int, live := true) -> void:
 	if lost:
 		return
 	if not live:
-		_handle_input(input & SimConst.DIRS)
+		_handle_input(input & (SimConst.DIRS | SimConst.TARGET_MASK))
 		return
 	age += 1
 	_handle_input(input) # player clock: every tick
@@ -174,6 +174,9 @@ func clear_all() -> void:
 # --- input ------------------------------------------------------------------
 
 func _handle_input(input: int) -> void:
+	if input & SimConst.TARGET:
+		cursor_x = clampi((input >> 8) & 0x7, 0, W - 2)
+		cursor_y = TOP + clampi((input >> 12) & 0xF, 0, SimConst.H - 1)
 	var pressed := input & ~prev_input
 	var dir := input & SimConst.DIRS
 	if dir != 0 and dir == prev_input & SimConst.DIRS:

@@ -7,6 +7,10 @@ config/name="Finally A Block Game That Doesn't Suck"
 run/main_scene="res://scenes/boot.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 
+[input_devices]
+
+pointing/emulate_touch_from_mouse=true
+
 [autoload]
 
 Config="*res://autoload/config.gd"
