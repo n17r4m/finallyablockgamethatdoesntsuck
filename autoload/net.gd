@@ -16,6 +16,8 @@ var match_seed := 0
 var local_idx := 0
 
 var _ping_t := 0.0
+var _self_ready := false # rematch handshake (host side)
+var _peer_ready := false
 
 
 func _ready() -> void:
@@ -75,6 +77,8 @@ func leave() -> void:
 	hosting = false
 	remote_id = 0
 	rtt_ms = 0.0
+	_self_ready = false
+	_peer_ready = false
 
 
 func start_practice() -> void:
@@ -82,6 +86,24 @@ func start_practice() -> void:
 	match_seed = randi()
 	local_idx = 0
 	match_started.emit()
+
+
+## Both players ask; the host starts a fresh match once both have.
+func request_rematch() -> void:
+	if remote_id == 0:
+		start_practice()
+	elif hosting:
+		_self_ready = true
+		_try_rematch()
+	else:
+		_rematch_ready.rpc_id(remote_id)
+
+
+func _try_rematch() -> void:
+	if _self_ready and _peer_ready:
+		_self_ready = false
+		_peer_ready = false
+		start_match()
 
 
 ## Host only. Collects a second of pings first so both sides start ~together.
@@ -147,6 +169,13 @@ func _start(game_seed: int) -> void:
 	match_seed = game_seed
 	local_idx = 1
 	match_started.emit()
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rematch_ready() -> void:
+	if hosting and multiplayer.get_remote_sender_id() == remote_id:
+		_peer_ready = true
+		_try_rematch()
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered", 1)

@@ -17,7 +17,7 @@ enum { NORMAL, SWAP_L, SWAP_R, HOVER, FALL, LAND, MATCHED }
 ## Every field that is game state. copy() and checksum() walk this list, so a
 ## field missing here silently breaks rollback — new state goes here.
 const STATE := ["color", "st", "tm", "aux", "chain", "gid", "next_row",
-	"cursor_x", "cursor_y", "prev_input", "hold", "rise", "stop_t", "rng", "score", "lost",
+	"cursor_x", "cursor_y", "prev_input", "hold", "rise", "stop_t", "health", "rng", "score", "lost",
 	"busy", "need_scan", "need_support", "has_matched", "chain_n",
 	"outbox", "gar_q", "gar_t", "gar_side", "next_gid", "fx_combo", "fx_chain", "fx_t"]
 
@@ -36,6 +36,7 @@ var prev_input := 0
 var hold := 0
 var rise := 0
 var stop_t := 0
+var health := SimConst.HEALTH_TICKS # drains while topped out; 0 = lost
 var rng := 1
 var score := 0
 var lost := false
@@ -89,8 +90,12 @@ func checksum() -> int:
 	return hash(vals)
 
 
-func step(input: int) -> void:
+## live = false during the countdown: the cursor moves, nothing else happens.
+func step(input: int, live := true) -> void:
 	if lost:
+		return
+	if not live:
+		_handle_input(input & SimConst.DIRS)
 		return
 	_handle_input(input)
 	if busy:
@@ -474,6 +479,15 @@ func _drop_garbage(slab: int) -> bool:
 func _rise(input: int) -> void:
 	if has_matched:
 		return
+	if topped():
+		# Pressed against the top: the stack can't rise, grace drains instead.
+		if stop_t > 0:
+			stop_t -= 1
+		else:
+			health -= 1
+			lost = health <= 0
+		return
+	health = SimConst.HEALTH_TICKS
 	if input & SimConst.RAISE:
 		stop_t = 0
 		rise += SimConst.RAISE_SPEED
@@ -490,11 +504,6 @@ func _push_row() -> bool:
 	for x in W:
 		if color[x] != 0:
 			return false # buffer is full to the brim; hold the stack until it drains
-	for x in W:
-		var i := TOP * W + x
-		if color[i] != 0 and st[i] != FALL and st[i] != HOVER:
-			lost = true
-			return false
 	color = color.slice(W)
 	color.resize(N)
 	st = st.slice(W)
@@ -516,6 +525,15 @@ func _push_row() -> bool:
 
 
 # --- helpers ------------------------------------------------------------------
+
+## Something is resting in the top visible row.
+func topped() -> bool:
+	for x in W:
+		var i := TOP * W + x
+		if color[i] != 0 and st[i] != FALL and st[i] != HOVER:
+			return true
+	return false
+
 
 func _resting(i: int) -> bool:
 	return st[i] == NORMAL or st[i] == LAND

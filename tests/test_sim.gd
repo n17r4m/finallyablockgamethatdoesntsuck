@@ -4,7 +4,7 @@ extends SceneTree
 
 const W := SimConst.W
 const ROWS := SimConst.ROWS
-const EXPECTED_CHECKS := 10
+const EXPECTED_CHECKS := 12
 const LONG := SimConst.TICK_HZ * 8 # long enough for any scenario here to play out
 
 var _failed := 0
@@ -20,6 +20,8 @@ func _init() -> void:
 	_test_panel_hovers_then_falls()
 	_test_garbage_lands_as_one_slab()
 	_test_match_converts_garbage_bottom_row()
+	_test_countdown_freezes_all_but_cursor()
+	_test_top_out_grace()
 	_failed += EXPECTED_CHECKS - _ran
 	print("PASS" if _failed == 0 else "FAIL (%d)" % _failed)
 	quit(0 if _failed == 0 else 1)
@@ -34,6 +36,7 @@ func _check(ok: bool, what: String) -> void:
 
 func _empty() -> SimState:
 	var s := SimState.create(1)
+	s.tick = SimConst.COUNTDOWN_TICKS
 	for b in s.boards:
 		b.clear_all()
 		b.stop_t = 1 << 30 # freeze the rise so layouts stay put
@@ -150,3 +153,24 @@ func _test_match_converts_garbage_bottom_row() -> void:
 	_check(landed, "6x2 slab lands on the floor")
 	_check(flashed and bottom_panels and b.gid[_idx(0, 1)] != 0,
 			"touching match flashes the slab, turns its bottom row into panels, 6x1 remains on top")
+
+
+func _test_countdown_freezes_all_but_cursor() -> void:
+	var s := SimState.create(1)
+	var b := s.boards[0]
+	var before := b.color.duplicate()
+	s.step(SimConst.RIGHT | SimConst.SWAP, 0)
+	_run(s, SimConst.COUNTDOWN_TICKS - 2)
+	_check(b.cursor_x == 3 and b.color == before and b.rise == 0, "countdown: cursor moves, swap/rise don't")
+
+
+func _test_top_out_grace() -> void:
+	var s := _empty()
+	var b := s.boards[0]
+	b.stop_t = 0
+	for row in SimConst.H:
+		b.put(0, row, 1 + row % 2)
+	_run(s, SimConst.HEALTH_TICKS - 10)
+	var survived := not b.lost and s.winner == -1
+	_run(s, 20)
+	_check(survived and b.lost and s.winner == 1, "topped out: survives the grace period, then loses")

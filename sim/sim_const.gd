@@ -34,6 +34,9 @@ const ROW_UNITS := 6480 # one row per 6 s at base rise speed
 const RAISE_SPEED := 40 # manual raise multiplier
 const STOP_TICKS := 1080 # rise pauses this long after a combo or chain link
 
+const COUNTDOWN_TICKS := 3240 # 3 s; cursor moves, nothing else does
+const HEALTH_TICKS := 2160 # 2 s of grace while the stack is pressed against the top
+
 const GARBAGE_DELAY := 540 # ~0.5 s from being sent to dropping in
 const GARBAGE_GAP := 135 # between consecutive slabs
 const FX_TICKS := 1080 # how long combo/chain callouts stay up

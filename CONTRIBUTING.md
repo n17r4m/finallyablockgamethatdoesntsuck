@@ -31,6 +31,10 @@ unlicensed contribution would block platform releases.
 - **Name and branding** ("Finally A Block Game That Doesn't Suck", logos): trademarks of
   the maintainer. Forks must ship under a different name.
 
+Never port code or assets from other GPL games (including Crack Attack, which inspired this
+one): we don't hold their copyright, so it couldn't be relicensed for platform builds. Matching
+behaviour from observation is fine; copying is not.
+
 When contributing assets, state their origin and license in the PR. Only original work or
 work under a license compatible with the above is accepted.
 

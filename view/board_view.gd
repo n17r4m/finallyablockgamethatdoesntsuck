@@ -77,6 +77,23 @@ static func incoming(b: SimBoard) -> Array[Vector2i]:
 	return out
 
 
+## Per column: 1 if its stack is within two rows of the top (renderers shake these).
+static func danger_columns(b: SimBoard) -> PackedByteArray:
+	var out := PackedByteArray()
+	out.resize(SimConst.W)
+	for x in SimConst.W:
+		for y in range(SimConst.BUF, SimConst.BUF + 2):
+			var i := y * SimConst.W + x
+			if b.color[i] != 0 and b.st[i] != SimBoard.FALL and b.st[i] != SimBoard.HOVER:
+				out[x] = 1
+	return out
+
+
+## 0..1 grace remaining while topped out, 1 otherwise.
+static func health(b: SimBoard) -> float:
+	return float(b.health) / SimConst.HEALTH_TICKS
+
+
 ## "12 combo" / "x3 chain" callout text while it's live, else "".
 static func callout(b: SimBoard) -> String:
 	if b.fx_t <= 0:

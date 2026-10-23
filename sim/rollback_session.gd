@@ -38,7 +38,7 @@ var _remote_checks := {}
 
 
 func _init(game_seed: int, idx: int, delay_ticks: int, offline := false) -> void:
-	state = SimState.create(game_seed)
+	state = SimState.create(game_seed, offline)
 	local_idx = idx
 	input_delay = delay_ticks
 	if offline:

@@ -37,7 +37,6 @@ func _ready() -> void:
 
 	Net.status.connect(_on_status)
 	Net.opponent_joined.connect(_on_opponent_joined)
-	Net.match_started.connect(_on_match_started)
 
 	var args := Scenes.launch_args
 	Scenes.launch_args = {}
@@ -88,7 +87,3 @@ func _on_status(text: String) -> void:
 func _on_opponent_joined() -> void:
 	if Net.hosting:
 		Net.start_match()
-
-
-func _on_match_started() -> void:
-	Scenes.goto(Scenes.MATCH)
