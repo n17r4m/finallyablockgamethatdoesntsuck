@@ -40,7 +40,7 @@ func _build_3d() -> void:
 	var world := Node3D.new()
 	add_child(world)
 	var cam := Camera3D.new()
-	cam.position = Vector3(0, -0.4, 20.5)
+	cam.position = Vector3(0, 0.3, 20.5)
 	cam.fov = 42
 	world.add_child(cam)
 	cam.make_current()
@@ -144,6 +144,8 @@ func _draw() -> void:
 			small = "score %d" % s.boards[0].score
 		else:
 			big = "DRAW" if s.winner == 2 else ("YOU WIN" if s.winner == session.local_idx else "YOU LOSE")
+			if _pilot and s.winner != 2:
+				big = "%s WINS" % _label(s.winner).get_slice(" (", 0).to_upper()
 		small += ("   waiting for opponent…" if _rematch_sent and not _offline
 				else "   swap for %s · esc for title" % ("retry" if _offline else "rematch"))
 		if _pilot:

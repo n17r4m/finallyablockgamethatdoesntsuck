@@ -31,7 +31,7 @@ func _ready() -> void:
 	var quad := QuadMesh.new()
 	quad.size = Vector2(W + 0.3, H + 0.3)
 	well.mesh = quad
-	well.position = Vector3(0, 0, -0.6)
+	well.position = Vector3(0, 0, -0.46) # flush behind the blocks so perspective can't slide it
 	_well_mat = _unshaded(WELL_COLOR)
 	well.material_override = _well_mat
 	add_child(well)
@@ -67,12 +67,12 @@ func _ready() -> void:
 		m.material_override = white
 		_cursor.add_child(m)
 
-	_title = _label(Vector3(-W / 2.0, H / 2.0 + 0.8, 0), 64, HORIZONTAL_ALIGNMENT_LEFT)
-	_incoming = _label(Vector3(-W / 2.0, H / 2.0 + 1.6, 0), 40, HORIZONTAL_ALIGNMENT_LEFT)
+	_title = _label(Vector3(-W / 2.0, H / 2.0 + 0.7, 0), 40, HORIZONTAL_ALIGNMENT_LEFT)
+	_incoming = _label(Vector3(-W / 2.0, H / 2.0 + 1.3, 0), 32, HORIZONTAL_ALIGNMENT_LEFT)
 	_incoming.modulate = GARBAGE_COLOR
-	_callout = _label(Vector3(0, -H / 2.0 - 1.0, 0.5), 72, HORIZONTAL_ALIGNMENT_CENTER)
+	_callout = _label(Vector3(0, -H / 2.0 + 2.0, 1.5), 72, HORIZONTAL_ALIGNMENT_CENTER) # floats in front of the stack
 	_callout.modulate = Color("e8c547")
-	_warning = _label(Vector3(0, H / 2.0 + 0.2, 0.8), 56, HORIZONTAL_ALIGNMENT_CENTER)
+	_warning = _label(Vector3(0, H / 2.0 - 0.6, 0.8), 48, HORIZONTAL_ALIGNMENT_CENTER) # inside the well's top
 	_warning.modulate = Color("ff5a5a")
 
 
@@ -94,7 +94,7 @@ func _process(delta: float) -> void:
 		elif e.matched:
 			c = c.lightened(0.35)
 		var s: Vector3 = e.scale * (1.0 + e.popped * 0.8)
-		c.a = (1.0 - e.popped) * clampf(1.0 + p.y, 0.0, 1.0) # fade in from the hidden buffer
+		c.a = (1.0 - e.popped) * clampf(1.0 + 2.5 * p.y, 0.0, 1.0) # fade out fast above the top edge
 		_mm.set_instance_transform(n, Transform3D(Basis.from_scale(s), _to3d(p)))
 		_mm.set_instance_color(n, c)
 		n += 1
@@ -107,7 +107,7 @@ func _process(delta: float) -> void:
 	_mm.visible_instance_count = n
 
 	_cursor.position = _to3d(BoardView.cursor(board)) + Vector3(0.5, 0, 0)
-	_title.text = "%s  %d%s" % [label, board.score, "  TOPPED OUT" if board.lost else ""]
+	_title.text = "%s  %d" % [label, board.score]
 	var incoming := BoardView.incoming(board)
 	_incoming.text = "" if incoming.is_empty() else "incoming " + " ".join(
 			incoming.map(func(v: Vector2i) -> String: return "%dx%d" % [v.x, v.y]))
@@ -133,7 +133,8 @@ func _label(pos: Vector3, size: int, align: HorizontalAlignment) -> Label3D:
 	l.font_size = size
 	l.pixel_size = 0.01
 	l.horizontal_alignment = align
-	l.outline_size = 0
+	l.outline_size = 12
+	l.outline_modulate = Color(0, 0, 0, 0.8)
 	add_child(l)
 	return l
 
