@@ -16,7 +16,7 @@ enum { NORMAL, SWAP_L, SWAP_R, HOVER, FALL, LAND, MATCHED }
 
 ## Every field that is game state. copy() and checksum() walk this list, so a
 ## field missing here silently breaks rollback — new state goes here.
-const STATE := ["color", "st", "tm", "aux", "chain", "gid", "next_row",
+const STATE := ["color", "st", "tm", "aux", "chain", "gid", "reveal", "next_row",
 	"cursor_x", "cursor_y", "prev_input", "hold", "rise", "stop_t", "health", "rng", "score", "lost",
 	"busy", "need_scan", "need_support", "has_matched", "chain_n",
 	"outbox", "gar_q", "gar_t", "gar_side", "next_gid", "fx_combo", "fx_chain", "fx_t",
@@ -29,6 +29,7 @@ var tm := PackedInt32Array() # ticks left in the current state
 var aux := PackedInt32Array() # MATCHED: pop tick | flash-end tick << 16
 var chain := PackedByteArray() # 1 = falling because something under it cleared
 var gid := PackedInt32Array() # garbage slab id, 0 = panel
+var reveal := PackedByteArray() # cracking garbage: the panel colour this cell becomes (fixed at crack start)
 var next_row := PackedByteArray() # rising in from below
 
 var cursor_x := 2 # cursor covers cursor_x and cursor_x + 1
@@ -72,6 +73,7 @@ static func create(game_seed: int) -> SimBoard:
 	b.aux.resize(N)
 	b.chain.resize(N)
 	b.gid.resize(N)
+	b.reveal.resize(N)
 	b.rng = (game_seed & 0xFFFFFFFF) | 1
 	for y in range(ROWS - 5, ROWS):
 		var row := b._make_row(y - 1)
@@ -296,11 +298,13 @@ func _update_slab(i: int) -> void:
 		MATCHED:
 			has_matched = true
 			if _slab_tick(r) == 0:
-				# Bottom row becomes panels (which may chain); the rest shrinks back to garbage.
+				# Bottom row becomes the panels revealed during the crack (they may chain);
+				# the rest shrinks back to garbage. Unsupported ones hover, then fall.
 				for k in w:
 					var c := y1 * W + x0 + k
+					var col := reveal[c]
 					_clear_cell(c)
-					color[c] = _rand() % SimConst.COLORS + 1
+					color[c] = col if col != 0 else _rand() % SimConst.COLORS + 1
 					chain[c] = 1
 				if h > 1:
 					_slab_set(PackedInt32Array([x0, y0, w, h - 1]), NORMAL, 0)
@@ -439,6 +443,11 @@ func _convert_touching(matched: PackedInt32Array, total: int) -> void:
 				for k in r[2]:
 					cells.append(y * W + r[0] + k)
 					todo.append(y * W + r[0] + k)
+			# Decide now what the bottom row will become, so it can be revealed cell by cell.
+			for k in r[2]:
+				reveal[(r[1] + r[3] - 1) * W + r[0] + k] = _rand() % SimConst.COLORS + 1
+	# Reveal order: top-left to bottom-right, like panel pops.
+	cells.sort()
 	var n := cells.size()
 	var pops := SimConst.POP_TICKS * n
 	for k in n:
@@ -527,6 +536,8 @@ func _push_row() -> bool:
 	chain.resize(N)
 	gid = gid.slice(W)
 	gid.resize(N)
+	reveal = reveal.slice(W)
+	reveal.resize(N)
 	for x in W:
 		color[(ROWS - 1) * W + x] = next_row[x]
 	next_row = _make_row(ROWS - 1)
@@ -567,6 +578,7 @@ func _clear_cell(i: int) -> void:
 	aux[i] = 0
 	chain[i] = 0
 	gid[i] = 0
+	reveal[i] = 0
 
 
 func _move(from: int, to: int) -> void:
@@ -576,6 +588,7 @@ func _move(from: int, to: int) -> void:
 	aux[to] = aux[from]
 	chain[to] = chain[from]
 	gid[to] = gid[from]
+	reveal[to] = reveal[from]
 	_clear_cell(from)
 
 

@@ -44,6 +44,16 @@ static func blocks(b: SimBoard) -> Array[Dictionary]:
 		elif s == SimBoard.LAND:
 			var k := float(t) / SimConst.LAND_TICKS
 			scale = Vector3(1.0 + 0.12 * k, 1.0 - 0.12 * k, 1.0)
+		elif s == SimBoard.MATCHED and b.gid[i] != 0:
+			# Cracking garbage: flash, then reveal the panel each bottom-row cell becomes,
+			# one at a time. Revealed panels hang there until the whole slab is done.
+			var pop_at := b.aux[i] & 0xFFFF
+			var flash_end := b.aux[i] >> 16
+			flash = t > flash_end and (t / FLASH_PERIOD) % 2 == 0
+			if t <= pop_at and b.reveal[i] != 0:
+				out.append({"pos": pos, "scale": scale, "color": b.reveal[i], "gid": 0, "matched": false,
+						"flash": false, "popped": 0.0, "chain": false})
+				continue
 		elif s == SimBoard.MATCHED:
 			var pop_at := b.aux[i] & 0xFFFF
 			var flash_end := b.aux[i] >> 16
@@ -87,6 +97,21 @@ static func danger_columns(b: SimBoard) -> PackedByteArray:
 			if b.color[i] != 0 and b.st[i] != SimBoard.FALL and b.st[i] != SimBoard.HOVER:
 				out[x] = 1
 	return out
+
+
+## Rows of resting garbage stacked above the visible well.
+static func overflow_rows(b: SimBoard) -> int:
+	for y in SimConst.BUF:
+		for x in SimConst.W:
+			var i := y * SimConst.W + x
+			if b.gid[i] != 0 and b.st[i] != SimBoard.FALL and b.st[i] != SimBoard.HOVER:
+				return SimConst.BUF - y
+	return 0
+
+
+## Seconds of grace left while pressed against the top, or -1 when not topped out.
+static func grace_seconds(b: SimBoard) -> float:
+	return float(b.health) / SimConst.TICK_HZ if b.topped() else -1.0
 
 
 ## 0..1 grace remaining while topped out, 1 otherwise.

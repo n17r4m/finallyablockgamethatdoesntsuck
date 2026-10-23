@@ -4,7 +4,7 @@ extends SceneTree
 
 const W := SimConst.W
 const ROWS := SimConst.ROWS
-const EXPECTED_CHECKS := 12
+const EXPECTED_CHECKS := 15
 const LONG := SimConst.TICK_HZ * 8 # long enough for any scenario here to play out
 
 var _failed := 0
@@ -22,6 +22,8 @@ func _init() -> void:
 	_test_match_converts_garbage_bottom_row()
 	_test_countdown_freezes_all_but_cursor()
 	_test_top_out_grace()
+	_test_crack_reveals_cell_by_cell()
+	_test_story_chain_off_cracked_garbage()
 	_failed += EXPECTED_CHECKS - _ran
 	print("PASS" if _failed == 0 else "FAIL (%d)" % _failed)
 	quit(0 if _failed == 0 else 1)
@@ -174,3 +176,70 @@ func _test_top_out_grace() -> void:
 	var survived := not b.lost and s.winner == -1
 	_run(s, 20)
 	_check(survived and b.lost and s.winner == 1, "topped out: survives the grace period, then loses")
+
+
+## A 6x1 slab resting on two full rows, cracked by a match on top of it.
+func _cracking_slab() -> SimState:
+	var s := _empty()
+	var b := s.boards[0]
+	for x in W:
+		b.put(x, 0, 1 + x % 2)
+		b.put(x, 1, 2 - x % 2 + 2)
+	b.receive_garbage(PackedInt32Array([SimConst.slab(6, 1)]))
+	_run(s, LONG)
+	for x in 3:
+		b.put(x, 3, 5)
+	_run(s, 2)
+	return s
+
+
+func _test_crack_reveals_cell_by_cell() -> void:
+	var s := _cracking_slab()
+	var b := s.boards[0]
+	var promised := PackedByteArray()
+	for x in W:
+		promised.append(b.reveal[_idx(x, 2)])
+	var partial := false
+	var early_release := false
+	for t in LONG:
+		s.step(0, 0)
+		var shown := 0
+		for e in BoardView.blocks(b):
+			if e.gid == 0 and absf(e.pos.y - (SimConst.H - 3)) < 0.01 and b.gid[_idx(int(e.pos.x), 2)] != 0:
+				shown += 1
+		partial = partial or (shown > 0 and shown < W)
+		early_release = early_release or (shown < W and b.gid[_idx(0, 2)] == 0 and b.color[_idx(0, 2)] != 0 and t < 100)
+		if b.gid[_idx(W - 1, 2)] == 0:
+			break
+	var landed := PackedByteArray()
+	for x in W:
+		landed.append(b.color[_idx(x, 2)])
+	_check(partial and not early_release, "cracking garbage reveals its panels one at a time")
+	_check(promised == landed and not promised.has(0), "revealed colours are fixed when the crack starts")
+
+
+## The story: near the top, crack the slab above, read the colours as they're
+## revealed, rearrange below so a revealed panel drops into a match -> chain.
+func _test_story_chain_off_cracked_garbage() -> void:
+	var s := _cracking_slab()
+	var b := s.boards[0]
+	var c := b.reveal[_idx(4, 2)]
+	var others := [1, 2, 3, 4, 5].filter(func(v: int) -> bool: return v != c)
+	var a: int = others[0]
+	var d: int = others[1]
+	# Rearrange underneath while it cracks: a gap under x=4 flanked by two of its colour.
+	var row0 := [a, d, a, d, a, d]
+	var row1 := [d, a, c, c, 0, a]
+	for x in W:
+		b.color[_idx(x, 0)] = row0[x]
+		b.color[_idx(x, 1)] = row1[x]
+	b.need_support = true
+	b.need_scan = true
+	var hung_before_drop := 0
+	for t in LONG:
+		s.step(0, 0)
+		if b.gid[_idx(4, 2)] == 0 and b.st[_idx(4, 2)] == SimBoard.HOVER:
+			hung_before_drop += 1
+	_check(b.best_chain >= 2 and hung_before_drop > 0 and b.sent >= W,
+			"revealed panel hangs %d ms, drops into the gap, and the match is a chain (x%d, %d cells sent)" % [
+			hung_before_drop * 1000 / SimConst.TICK_HZ, b.best_chain, b.sent])

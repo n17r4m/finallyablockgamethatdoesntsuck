@@ -19,6 +19,7 @@ var _cursor: Node3D
 var _title: Label3D
 var _callout: Label3D
 var _incoming: Label3D
+var _warning: Label3D
 var _clock := 0.0
 
 
@@ -67,6 +68,8 @@ func _ready() -> void:
 	_incoming.modulate = GARBAGE_COLOR
 	_callout = _label(Vector3(0, -H / 2.0 - 1.0, 0.5), 72, HORIZONTAL_ALIGNMENT_CENTER)
 	_callout.modulate = Color("e8c547")
+	_warning = _label(Vector3(0, H / 2.0 + 0.2, 0.8), 56, HORIZONTAL_ALIGNMENT_CENTER)
+	_warning.modulate = Color("ff5a5a")
 
 
 func _process(delta: float) -> void:
@@ -104,6 +107,14 @@ func _process(delta: float) -> void:
 	_incoming.text = "" if incoming.is_empty() else "incoming " + " ".join(
 			incoming.map(func(v: Vector2i) -> String: return "%dx%d" % [v.x, v.y]))
 	_callout.text = BoardView.callout(board)
+	var warn := PackedStringArray()
+	var over := BoardView.overflow_rows(board)
+	if over > 0:
+		warn.append("+%d above" % over)
+	var grace := BoardView.grace_seconds(board)
+	if grace >= 0.0:
+		warn.append("%.1fs" % grace)
+	_warning.text = "  ".join(warn)
 
 
 ## BoardView cell space (y down from the top visible row) -> local 3D (y up, centred).

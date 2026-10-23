@@ -8,6 +8,7 @@ const SOLO_FRAMES := 60 * 90 # 90 s
 const MATCH_FRAMES := 60 * 300 # 5 min cap
 
 var _failed := 0
+var _ran := 0
 
 
 func _init() -> void:
@@ -15,11 +16,15 @@ func _init() -> void:
 		_solo(name, "hard")
 	_solo("Overmind", "easy")
 	_ladder("Overmind", "max", "easy", 4)
+	# A script error skips checks rather than failing them; count them.
+	var expected := CpuPlayer.OPPONENTS.size() * 2 + 2 + 1
+	_failed += expected - _ran
 	print("PASS" if _failed == 0 else "FAIL (%d)" % _failed)
 	quit(0 if _failed == 0 else 1)
 
 
 func _check(ok: bool, what: String) -> void:
+	_ran += 1
 	print(("  ok   " if ok else "  FAIL ") + what)
 	if not ok:
 		_failed += 1

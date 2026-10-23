@@ -74,6 +74,13 @@ func _draw() -> void:
 	if not incoming.is_empty():
 		var txt := " ".join(incoming.map(func(v: Vector2i) -> String: return "%dx%d" % [v.x, v.y]))
 		draw_string(font, Vector2(0, -44), "incoming " + txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, GARBAGE_COLOR)
+	var warn := PackedStringArray()
+	if BoardView.overflow_rows(board) > 0:
+		warn.append("+%d above" % BoardView.overflow_rows(board))
+	if BoardView.grace_seconds(board) >= 0.0:
+		warn.append("%.1fs" % BoardView.grace_seconds(board))
+	if not warn.is_empty():
+		draw_string(font, Vector2(0, 16), "  ".join(warn), HORIZONTAL_ALIGNMENT_CENTER, size.x, 22, Color("ff5a5a"))
 	var callout := BoardView.callout(board)
 	if callout != "":
 		draw_string(font, Vector2(0, size.y + 34), callout, HORIZONTAL_ALIGNMENT_CENTER, size.x, 26,

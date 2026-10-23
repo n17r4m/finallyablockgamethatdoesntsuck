@@ -29,7 +29,8 @@ const W := SimConst.W
 const H := SimConst.H
 const TOP := SimConst.BUF
 const GARBAGE := 7 # model: garbage, an obstacle that matches next to it hit
-const BLOCK := 8 # model: solid and unknown (converting garbage)
+const BLOCK := 8 # model: solid and unknown (cracking garbage not yet revealed)
+const SUSPENDED := 8 # model: 9..13 = revealed panel (colour + 8) hanging in a cracking slab
 
 const SKILLS := {
 	"easy": {"depth": 1, "samples": 2, "step_frames": 9, "noise": 40.0, "raise": false},
@@ -84,6 +85,7 @@ var _last_rise := 0
 var _cursor := Vector2i.ZERO
 var _incoming := 0 # garbage rows queued or still up in the hidden buffer
 var _last_hash := 0
+var _suspended := false # the projection has revealed panels waiting to drop
 
 
 func _init(skill: String, style: String, rng_seed: int, search_kind := "stochastic") -> void:
@@ -137,6 +139,11 @@ func next_input(b: SimBoard) -> int:
 	var t0 := Time.get_ticks_usec()
 	_incoming = _garbage_rows(b)
 	var g := project(b)
+	_suspended = false
+	for c in g:
+		if c > SUSPENDED:
+			_suspended = true
+			break
 	match search:
 		"stochastic":
 			_think(g)
@@ -212,7 +219,9 @@ func _beam(g: PackedByteArray) -> Array[Vector2i]:
 				var travel: int = node[3] + absi(s.x - node[4].x) + absi(s.y - node[4].y)
 				var plan: Array[Vector2i] = node[1].duplicate()
 				plan.append(s)
-				var v: float = total + _shape(m) - travel * w.travel - plan.size() * 2.0 \
+				var after := m.duplicate() if _suspended else m
+				var settled: float = _settle(after) * node[5] * 0.85
+				var v: float = total + settled + _shape(after) - travel * w.travel - plan.size() * 2.0 \
 						+ _rng.randf_range(-noise, noise) + eager
 				children.append([m, plan, total, travel, s, node[5] * 0.85, v])
 				if v > best_v:
@@ -234,7 +243,8 @@ func _flat_mc(g: PackedByteArray) -> Array[Vector2i]:
 		_swap(m, s.x, s.y)
 		var base := _reward(_resolve(m))
 		var travel := absi(s.x - _cursor.x) + absi(s.y - _cursor.y)
-		var v: float = base + _shape(m) - travel * w.travel - 2.0
+		var after := m.duplicate() if _suspended else m
+		var v: float = base + _settle(after) * 0.85 + _shape(after) - travel * w.travel - 2.0
 		if depth > 1:
 			for k in rollouts:
 				var cont: Array[Vector2i] = []
@@ -270,7 +280,8 @@ func _rollout(g: PackedByteArray, plan: Array[Vector2i], from := Vector2i(-1, -1
 		pos = s
 		total += _reward(_resolve(m)) * discount
 		discount *= 0.85
-		var v: float = total + _shape(m) - travel * w.travel - walk.size() * 2.0
+		var after := m.duplicate() if _suspended else m
+		var v: float = total + _settle(after) * discount + _shape(after) - travel * w.travel - walk.size() * 2.0
 		if v > best_v:
 			best_v = v
 			best_len = walk.size()
@@ -305,7 +316,23 @@ func evaluate(g: PackedByteArray, plan: Array[Vector2i]) -> float:
 		pos = s
 		total += _reward(_resolve(m)) * discount
 		discount *= 0.85
+	total += _settle(m) * discount
 	return total + _shape(m) - travel * w.travel - plan.size() * 2.0
+
+
+## Value of what happens after the plan: revealed panels drop out of cracking
+## garbage and resolve, and anything they match is a chain link. Mutates m.
+func _settle(m: PackedByteArray) -> float:
+	if not _suspended:
+		return 0.0
+	for i in m.size():
+		if m[i] > SUSPENDED:
+			m[i] -= SUSPENDED
+	_gravity(m)
+	var r := _resolve(m)
+	if r.x > 0:
+		r.x += 1 # they carry chain status
+	return _reward(r)
 
 
 ## Vector4i(chain links, panels cleared, biggest combo, garbage cells hit)
@@ -371,7 +398,12 @@ func project(b: SimBoard) -> PackedByteArray:
 		if c == 0:
 			continue
 		if b.gid[r] != 0:
-			g[i] = BLOCK if b.st[r] == SimBoard.MATCHED else GARBAGE
+			if b.st[r] != SimBoard.MATCHED or b.reveal[r] == 0:
+				g[i] = GARBAGE
+			elif b.tm[r] <= (b.aux[r] & 0xFFFF):
+				g[i] = SUSPENDED + b.reveal[r] # revealed: we can see it, it will drop
+			else:
+				g[i] = BLOCK # not revealed yet: no peeking
 		elif b.st[r] != SimBoard.MATCHED:
 			g[i] = c
 	_gravity(g)

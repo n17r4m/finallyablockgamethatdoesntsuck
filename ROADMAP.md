@@ -10,11 +10,11 @@ Feature list below is from memory of Crack Attack; correct it where it's wrong.
 | Crack Attack | Us | Status |
 |---|---|---|
 | Panel de Pon rules: swap, gravity, combos, chains | per-panel state machine, 1080 Hz | done |
-| Garbage: combo slabs, chain slabs, shatter into panels | multi-row slabs, flash + convert | done (plain FX) |
+| Garbage: combo slabs, chain slabs, shatter into panels | multi-row slabs; cell-by-cell reveal of pre-rolled colours; revealed panels hang, then drop with chain status | done (plain FX) |
 | 3D rendered blocks, lit, animated | BoardRenderer3D over BoardView | first pass |
 | Combo / chain signs | callouts | basic |
 | Countdown, win / lose screens | in-sim countdown, winner, rematch | done |
-| Top-out grace ("dying") with warning | health timer + danger shake | done |
+| Top-out grace ("dying") with warning | health timer, danger shake, grace countdown, "+N above" overflow | done |
 | Solo mode with score + high-score table | practice (solo sim) | score yes, table no |
 | Computer opponent with difficulty levels | 5 personalities × 4 levels, stochastic plan search | done (tuning) |
 | Network versus | rollback P2P, ENet/WebSocket | **exceeds** (CA was lockstep TCP) |
