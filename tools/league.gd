@@ -4,20 +4,21 @@ extends SceneTree
 ##
 ##   nice -n 19 godot --headless --path . -s tools/league.gd -- \
 ##       --agents=stochastic/balanced/hard,beam/balanced/hard,Architect:hard \
-##       --games=10 --out=data/run1 [--positions] [--worker=0 --workers=2] [--seed=1000]
+##       --games=10 --out=data/run1 [--positions] [--worker=0 --workers=2] [--seed=1000] [--start=0]
 ##
 ## Agents are "search/style/level" or roster "Name:level". Sides alternate each
 ## game. Each worker plays games k where k % workers == worker and appends to its
 ## own files: games-w<worker>.jsonl (one line per game) and, with --positions,
 ## positions-w<worker>.jsonl (both boards' features once a second, labelled with
-## the eventual result: 1 won, 0 lost, 0.5 draw/timeout).
+## the eventual result: 1 won, 0 lost, 0.5 draw/timeout). --start=K skips games
+## below K, to resume an interrupted run (possibly with a different worker count).
 
 const MAX_FRAMES := 60 * 600 # 10 min cap; the rise speed-up should end games well before
 const SAMPLE_EVERY := 60
 
 
 func _init() -> void:
-	var opt := {"agents": "", "games": "10", "out": "data/league", "worker": "0", "workers": "1", "seed": "1000"}
+	var opt := {"agents": "", "games": "10", "out": "data/league", "worker": "0", "workers": "1", "seed": "1000", "start": "0"}
 	for a in OS.get_cmdline_user_args():
 		var kv := a.trim_prefix("--").split("=", true, 1)
 		opt[kv[0]] = kv[1] if kv.size() > 1 else "true"
@@ -42,7 +43,7 @@ func _init() -> void:
 	for i in agents.size():
 		for j in range(i + 1, agents.size()):
 			for g in int(opt.games):
-				if k % workers == worker:
+				if k >= int(opt.start) and k % workers == worker:
 					var flip := g % 2 == 1
 					var rec := _play(agents[j] if flip else agents[i], agents[i] if flip else agents[j],
 							int(opt.seed) + k, pos_f)
