@@ -29,6 +29,10 @@ const FALL_TICKS := 18 # 1 f per cell
 const LAND_TICKS := 108 # 6 f: landing squash (matchable, presentation only)
 const FLASH_TICKS := 792 # 44 f: matched panels flash
 const POP_TICKS := 162 # 9 f: then pop one at a time, vanishing together at the end
+# Cracking garbage reveals in a ripple outward from where the match touched it.
+const REVEAL_TICKS := 270 # 15 f per cell that reveals a panel: slow enough to read and react
+const SHELL_POP_TICKS := 54 # 3 f per cell that stays garbage (upper rows)
+const GARBAGE_HANG_TICKS := 432 # 24 f: revealed panels hang before dropping
 
 const ROW_UNITS := 6480 # one row per 6 s at base rise speed
 const RAISE_SPEED := 40 # manual raise multiplier

@@ -4,7 +4,7 @@ extends SceneTree
 
 const W := SimConst.W
 const ROWS := SimConst.ROWS
-const EXPECTED_CHECKS := 15
+const EXPECTED_CHECKS := 16
 const LONG := SimConst.TICK_HZ * 8 # long enough for any scenario here to play out
 
 var _failed := 0
@@ -24,6 +24,7 @@ func _init() -> void:
 	_test_top_out_grace()
 	_test_crack_reveals_cell_by_cell()
 	_test_story_chain_off_cracked_garbage()
+	_test_crack_ripples_from_impact()
 	_failed += EXPECTED_CHECKS - _ran
 	print("PASS" if _failed == 0 else "FAIL (%d)" % _failed)
 	quit(0 if _failed == 0 else 1)
@@ -243,3 +244,32 @@ func _test_story_chain_off_cracked_garbage() -> void:
 	_check(b.best_chain >= 2 and hung_before_drop > 0 and b.sent >= W,
 			"revealed panel hangs %d ms, drops into the gap, and the match is a chain (x%d, %d cells sent)" % [
 			hung_before_drop * 1000 / SimConst.TICK_HZ, b.best_chain, b.sent])
+
+
+## Bottom-row reveal times for a cracking slab, by column: ticks until each shows.
+func _reveal_times(b: SimBoard, row: int) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	for x in W:
+		var i := _idx(x, row)
+		out.append(b.tm[i] - (b.aux[i] & 0xFFFF))
+	return out
+
+
+func _test_crack_ripples_from_impact() -> void:
+	# Match on top-left of a 6x2 slab: the bottom row must open nearest-first, left to right.
+	var s := _empty()
+	var b := s.boards[0]
+	for x in W:
+		b.put(x, 0, 1 + x % 2)
+	b.receive_garbage(PackedInt32Array([SimConst.slab(6, 2)]))
+	_run(s, LONG)
+	for x in 3:
+		b.put(x, 3, 5)
+	_run(s, 2)
+	var top_hit := _reveal_times(b, 1)
+	var ok_order := true
+	for x in range(1, W):
+		ok_order = ok_order and top_hit[x] >= top_hit[x - 1]
+	var bottom_before_far_top := top_hit[0] < b.tm[_idx(5, 2)] - (b.aux[_idx(5, 2)] & 0xFFFF)
+	_check(ok_order and bottom_before_far_top,
+			"crack ripples out from the impact; the bottom row near it opens before far shell cells (%s)" % top_hit)

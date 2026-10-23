@@ -306,6 +306,9 @@ func _update_slab(i: int) -> void:
 					_clear_cell(c)
 					color[c] = col if col != 0 else _rand() % SimConst.COLORS + 1
 					chain[c] = 1
+					var below := c + W
+					if below < N and (color[below] == 0 or st[below] == HOVER or st[below] == FALL):
+						_set_state(c, HOVER, SimConst.GARBAGE_HANG_TICKS) # bullet time before the drop
 				if h > 1:
 					_slab_set(PackedInt32Array([x0, y0, w, h - 1]), NORMAL, 0)
 				need_scan = true
@@ -424,35 +427,81 @@ func _scan() -> void:
 			chain[i] = 0
 
 
-## Garbage touching a match (and garbage touching that, transitively) starts converting.
+## Garbage touching a match (and garbage touching that, transitively) starts cracking.
+## It breaks apart in a ripple from where the match touched it: each cell's turn
+## comes by its distance through the garbage from the matched panels, bottom row
+## first on ties. Cells that will become panels reveal slowly; the rest pop fast.
 func _convert_touching(matched: PackedInt32Array, total: int) -> void:
+	# Which slabs crack: everything reachable from the match through touching garbage.
 	var todo := matched.duplicate()
 	var seen := PackedInt32Array()
-	var cells := PackedInt32Array()
 	while not todo.is_empty():
 		var i := todo[-1]
 		todo.remove_at(todo.size() - 1)
-		var x := i % W
-		for j: int in [i - W if i >= W else -1, i + W if i + W < N else -1,
-				i - 1 if x > 0 else -1, i + 1 if x < W - 1 else -1]:
-			if j < 0 or gid[j] == 0 or seen.has(gid[j]) or st[j] != NORMAL:
+		for j in _neighbours(i):
+			if gid[j] == 0 or seen.has(gid[j]) or st[j] != NORMAL:
 				continue
 			seen.append(gid[j])
 			var r := _slab_rect(j)
 			for y in range(r[1], r[1] + r[3]):
 				for k in r[2]:
-					cells.append(y * W + r[0] + k)
 					todo.append(y * W + r[0] + k)
 			# Decide now what the bottom row will become, so it can be revealed cell by cell.
 			for k in r[2]:
 				reveal[(r[1] + r[3] - 1) * W + r[0] + k] = _rand() % SimConst.COLORS + 1
-	# Reveal order: top-left to bottom-right, like panel pops.
-	cells.sort()
-	var n := cells.size()
-	var pops := SimConst.POP_TICKS * n
-	for k in n:
+	if seen.is_empty():
+		return
+	# Ripple: breadth-first distance from the matched panels through cracking cells.
+	var dist := PackedInt32Array()
+	dist.resize(N)
+	dist.fill(-1)
+	var queue := PackedInt32Array()
+	for i in matched:
+		for j in _neighbours(i):
+			if gid[j] != 0 and seen.has(gid[j]) and dist[j] < 0:
+				dist[j] = 1
+				queue.append(j)
+	var head := 0
+	while head < queue.size():
+		var i := queue[head]
+		head += 1
+		for j in _neighbours(i):
+			if gid[j] != 0 and seen.has(gid[j]) and dist[j] < 0:
+				dist[j] = dist[i] + 1
+				queue.append(j)
+	# Order by distance, then lower rows first, then left to right. Encoded as one sort key.
+	var keys := PackedInt64Array()
+	for i in queue:
+		keys.append((dist[i] << 40) | ((ROWS - 1 - i / W) << 32) | ((i % W) << 24) | i)
+	keys.sort()
+	var cells := PackedInt32Array()
+	var durs := PackedInt32Array()
+	var pops := 0
+	for key in keys:
+		var i := key & 0xFFFFFF
+		cells.append(i)
+		var d := SimConst.REVEAL_TICKS if reveal[i] != 0 else SimConst.SHELL_POP_TICKS
+		durs.append(d)
+		pops += d
+	var elapsed := 0
+	for k in cells.size():
+		elapsed += durs[k]
 		_set_state(cells[k], MATCHED, total + pops)
-		aux[cells[k]] = SimConst.POP_TICKS * (n - 1 - k) | (pops << 16)
+		aux[cells[k]] = (pops - elapsed) | (pops << 16)
+
+
+func _neighbours(i: int) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	var x := i % W
+	if i >= W:
+		out.append(i - W)
+	if i + W < N:
+		out.append(i + W)
+	if x > 0:
+		out.append(i - 1)
+	if x < W - 1:
+		out.append(i + 1)
+	return out
 
 
 func _check_chain_end() -> void:
