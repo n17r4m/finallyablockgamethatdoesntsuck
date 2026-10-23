@@ -17,6 +17,10 @@ static func create(game_seed: int) -> SimState:
 func step(input0: int, input1: int) -> void:
 	boards[0].step(input0)
 	boards[1].step(input1)
+	for p in 2:
+		if not boards[p].outbox.is_empty():
+			boards[1 - p].receive_garbage(boards[p].outbox)
+			boards[p].outbox.clear()
 	tick += 1
 
 

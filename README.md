@@ -6,7 +6,7 @@ Panel-de-Pon-style 1v1 versus, Godot 4.7, pure GDScript, rollback netcode.
 - Editor: open `project.godot` with `../Godot/Godot_v4.7.2-stable_linux.x86_64`.
 - Two local clients: `tools/duo.sh` (host + join on 127.0.0.1).
 - Launch args (after `--`): `--host`, `--join=ADDR`, `--practice`.
-- Netcode soak test: `godot --headless --path . -s tests/test_netcode.gd` (must print PASS).
+- Tests (both must print PASS): `godot --headless --path . -s tests/test_sim.gd` (game rules) and `-s tests/test_netcode.gd` (lossy-link rollback soak).
 
 ## Layout
 - `sim/` — deterministic game. **Integer-only, no nodes, no floats, no engine RNG.** 1080 Hz fixed tick.

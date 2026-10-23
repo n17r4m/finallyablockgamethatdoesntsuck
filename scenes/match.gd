@@ -61,16 +61,25 @@ func _draw() -> void:
 				var i := y * SimConst.W + x
 				if b.cells[i] == 0:
 					continue
+				var r := Rect2(origin + Vector2(x * CELL, y * CELL - rise_px), Vector2(CELL, CELL)).grow(-2)
+				if b.gid[i] != 0:
+					# Bridge the gap to the right neighbour so a slab reads as one piece.
+					if x < SimConst.W - 1 and b.gid[i + 1] == b.gid[i]:
+						r.size.x += 4
+					draw_rect(r, Color("8a8f9e"))
+					continue
 				var c := PALETTE[b.cells[i]]
 				if b.clear_t[i] > 0 and (b.clear_t[i] / 54) % 2 == 0:
 					c = Color.WHITE
-				var r := Rect2(origin + Vector2(x * CELL, y * CELL - rise_px), Vector2(CELL, CELL))
-				draw_rect(r.grow(-2), c)
+				draw_rect(r, c)
 		var cur := Rect2(origin + Vector2(b.cursor_x * CELL, b.cursor_y * CELL - rise_px), Vector2(CELL * 2, CELL))
 		draw_rect(cur, Color.WHITE, false, 3.0)
 		var who := "YOU" if p == session.local_idx else ("—" if _offline else "THEM")
 		draw_string(font, origin + Vector2(0, -16), "%s   %d%s" % [who, b.score, "   TOPPED OUT" if b.lost else ""],
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 20)
+		if not b.gar_q.is_empty():
+			draw_string(font, origin + Vector2(0, -40), "incoming " + " ".join(Array(b.gar_q).map(str)),
+					HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color("8a8f9e"))
 	var hud := "tick %d   %d Hz" % [s.tick, SimConst.TICK_HZ]
 	if not _offline:
 		hud += "   rtt %d ms   rollbacks %d   resim %d   stalls %d" % [Net.rtt_ms, session.stats.rollbacks,

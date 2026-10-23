@@ -22,3 +22,10 @@ const FALL_TICKS := 36 # one cell per ~33 ms
 const CLEAR_TICKS := 720 # ~667 ms flash before matched blocks vanish
 const ROW_UNITS := 6480 # one row per 6 s at base rise speed
 const RAISE_SPEED := 40 # manual raise multiplier
+
+const GARBAGE := 7 # cell value for garbage; colours are 1..COLORS
+const GARBAGE_DELAY := 540 # ~0.5 s from being sent to dropping in
+# Combo size -> garbage slab widths sent (Panel de Pon table).
+const COMBO_GARBAGE := {
+	4: [3], 5: [4], 6: [5], 7: [6], 8: [3, 4], 9: [4, 4], 10: [5, 5], 11: [5, 6], 12: [6, 6],
+}
