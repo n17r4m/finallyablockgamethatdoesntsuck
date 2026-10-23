@@ -37,8 +37,8 @@ var _final_checks := {} # tick -> checksum, final; recent ones ride along in pac
 var _remote_checks := {}
 
 
-func _init(game_seed: int, idx: int, delay_ticks: int, offline := false) -> void:
-	state = SimState.create(game_seed, offline)
+func _init(game_seed: int, idx: int, delay_ticks: int, offline := false, solo := offline) -> void:
+	state = SimState.create(game_seed, solo)
 	local_idx = idx
 	input_delay = delay_ticks
 	if offline:
@@ -56,6 +56,17 @@ func set_local_input(mask: int) -> void:
 		ts.append(t)
 		_masks[local_idx].append(mask)
 	_local_frontier = t
+
+
+## Offline only (CPU opponent): the other board's input, effective this tick.
+func set_remote_input(mask: int) -> void:
+	var r := 1 - local_idx
+	var t := state.tick
+	if _ticks[r][-1] == t:
+		_masks[r][-1] = mask
+	elif _masks[r][-1] != mask:
+		_ticks[r].append(t)
+		_masks[r].append(mask)
 
 
 func receive(pkt: Variant) -> void:

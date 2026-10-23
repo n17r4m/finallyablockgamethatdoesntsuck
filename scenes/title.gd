@@ -4,6 +4,9 @@ extends Control
 var _status: Label
 var _name: LineEdit
 var _address: LineEdit
+var _cpu: OptionButton
+var _level: OptionButton
+var _blurb: Label
 
 
 func _ready() -> void:
@@ -26,7 +29,30 @@ func _ready() -> void:
 	_address = _field(box, "Host address", Config.get_value("net", "address"))
 	_button(box, "Host", _host)
 	_button(box, "Join", _join)
-	_button(box, "Practice", Net.start_practice)
+	box.add_child(HSeparator.new())
+	var row := HBoxContainer.new()
+	_cpu = OptionButton.new()
+	_cpu.size_flags_horizontal = SIZE_EXPAND_FILL
+	for n: String in CpuPlayer.OPPONENTS:
+		_cpu.add_item(n)
+	_cpu.add_item("Endless (solo)")
+	_level = OptionButton.new()
+	for l: String in CpuPlayer.LEVELS:
+		_level.add_item(l)
+	_level.select(CpuPlayer.LEVELS.find(Net.cpu_level))
+	if Net.cpu_name in CpuPlayer.OPPONENTS:
+		_cpu.select(CpuPlayer.OPPONENTS.keys().find(Net.cpu_name))
+	row.add_child(_cpu)
+	row.add_child(_level)
+	box.add_child(row)
+	_blurb = Label.new()
+	_blurb.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_blurb.modulate = Color(1, 1, 1, 0.6)
+	box.add_child(_blurb)
+	_cpu.item_selected.connect(_on_cpu_selected)
+	_on_cpu_selected(_cpu.selected)
+	_button(box, "Play", _play_offline)
+	box.add_child(HSeparator.new())
 	if not OS.has_feature("web"):
 		_button(box, "Quit", get_tree().quit)
 
@@ -47,7 +73,27 @@ func _ready() -> void:
 			_address.text = args.join
 		_join()
 	elif args.has("practice"):
-		Net.start_practice()
+		Net.start_practice("")
+	elif args.has("cpu") or args.has("demo"):
+		# --cpu=Name[:level], --demo[=Name[:level]] (the CPU plays your board too)
+		var spec: String = str(args.get("cpu", args.get("demo")))
+		var parts := spec.split(":")
+		var name := parts[0] if parts[0] in CpuPlayer.OPPONENTS else "Overmind"
+		Net.demo = args.has("demo")
+		Net.start_practice(name, parts[1] if parts.size() > 1 and parts[1] in CpuPlayer.LEVELS else "hard")
+
+
+func _on_cpu_selected(i: int) -> void:
+	var names: Array = CpuPlayer.OPPONENTS.keys()
+	_level.disabled = i >= names.size()
+	_blurb.text = CpuPlayer.OPPONENTS[names[i]].blurb if i < names.size() else "Just you and the stack."
+
+
+func _play_offline() -> void:
+	var names: Array = CpuPlayer.OPPONENTS.keys()
+	Net.demo = false
+	Net.start_practice(names[_cpu.selected] if _cpu.selected < names.size() else "",
+			CpuPlayer.LEVELS[_level.selected])
 
 
 func _field(box: Container, label: String, value: String) -> LineEdit:

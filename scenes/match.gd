@@ -10,12 +10,19 @@ var _rematch_sent := false
 var _acc := 0 # tick-units * 1e6, so no float drift
 var _last_usec := 0
 var _views: Array[Node] = [] # BoardRenderer3D or BoardRenderer2D, indexed by board
+var _cpu: CpuPlayer # offline opponent on board 1
+var _pilot: CpuPlayer # demo mode: a CPU on your board too
 
 
 func _ready() -> void:
 	_offline = Net.remote_id == 0
 	var delay: int = Config.get_value("net", "input_delay_frames") * SimConst.TICKS_PER_FRAME
-	session = RollbackSession.new(Net.match_seed, Net.local_idx, delay, _offline)
+	var solo := _offline and Net.cpu_name == ""
+	session = RollbackSession.new(Net.match_seed, Net.local_idx, delay, _offline, solo)
+	if _offline and not solo:
+		_cpu = CpuPlayer.opponent(Net.cpu_name, Net.cpu_level, Net.match_seed)
+		if Net.demo:
+			_pilot = CpuPlayer.opponent("Overmind", Net.cpu_level, Net.match_seed + 1)
 	session.desynced.connect(_on_desynced)
 	print("match start seed=%d idx=%d %s" % [Net.match_seed, Net.local_idx, "offline" if _offline else "online"])
 	if not _offline:
@@ -51,9 +58,9 @@ func _build_3d() -> void:
 	world.add_child(we)
 	for p in 2:
 		var v := BoardRenderer3D.new()
-		v.position = Vector3(0.0 if _offline else -6.5 + 13.0 * p, 0, 0)
+		v.position = Vector3(0.0 if _solo() else -6.5 + 13.0 * p, 0, 0)
 		v.label = _label(p)
-		v.visible = not (_offline and p == 1)
+		v.visible = not (_solo() and p == 1)
 		world.add_child(v)
 		_views.append(v)
 
@@ -61,15 +68,21 @@ func _build_3d() -> void:
 func _build_2d() -> void:
 	for p in 2:
 		var v := BoardRenderer2D.new()
-		v.position = Vector2(520.0 if _offline else 280.0 + p * 480.0, 120)
+		v.position = Vector2(520.0 if _solo() else 280.0 + p * 480.0, 120)
 		v.label = _label(p)
-		v.visible = not (_offline and p == 1)
+		v.visible = not (_solo() and p == 1)
 		add_child(v)
 		_views.append(v)
 
 
+func _solo() -> bool:
+	return session.state.solo
+
+
 func _label(p: int) -> String:
-	return "YOU" if p == Net.local_idx else "THEM"
+	if p == Net.local_idx:
+		return "Overmind (%s)" % Net.cpu_level if _pilot else "YOU"
+	return "%s (%s)" % [Net.cpu_name, Net.cpu_level] if _cpu else "THEM"
 
 
 func _exit_tree() -> void:
@@ -92,8 +105,14 @@ func _process(delta: float) -> void:
 	# Ticks lost to a stall are dropped, not banked: the side that's ahead slows down.
 	_acc = mini(_acc - due * 1_000_000, 1_000_000)
 	if _ended == "":
-		session.set_local_input(Controls.sample())
+		var me := session.local_idx
+		session.set_local_input(_pilot.next_input(session.state.boards[me]) if _pilot else Controls.sample())
+		if _cpu:
+			session.set_remote_input(_cpu.next_input(session.state.boards[1 - me]))
 		session.advance(due)
+	if _pilot and session.state.winner != -1 and session.state.tick % (SimConst.TICK_HZ * 4) < SimConst.TICKS_PER_FRAME:
+		_rematch_sent = true
+		Net.request_rematch() # demo loops
 	if session.state.winner != -1 and not _rematch_sent and Input.is_action_just_pressed("swap"):
 		_rematch_sent = true
 		Net.request_rematch()
@@ -120,13 +139,15 @@ func _draw() -> void:
 	elif s.tick < SimConst.COUNTDOWN_TICKS + SimConst.TICK_HZ / 2:
 		big = "GO!"
 	if s.winner != -1:
-		if _offline:
+		if _solo():
 			big = "GAME OVER"
 			small = "score %d" % s.boards[0].score
 		else:
 			big = "DRAW" if s.winner == 2 else ("YOU WIN" if s.winner == session.local_idx else "YOU LOSE")
 		small += ("   waiting for opponent…" if _rematch_sent and not _offline
 				else "   swap for %s · esc for title" % ("retry" if _offline else "rematch"))
+		if _pilot:
+			small = "   demo — esc for title"
 	if _ended != "":
 		big = ""
 		small = _ended

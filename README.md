@@ -5,16 +5,19 @@ Panel-de-Pon-style 1v1 versus, Godot 4.7, pure GDScript, rollback netcode.
 ## Run
 - Editor: open `project.godot` with `../Godot/Godot_v4.7.2-stable_linux.x86_64`.
 - Two local clients: `tools/duo.sh` (host + join on 127.0.0.1).
-- Launch args (after `--`): `--host`, `--join=ADDR`, `--practice`.
+- Launch args (after `--`): `--host`, `--join=ADDR`, `--practice` (endless solo),
+  `--cpu=NAME[:LEVEL]` (e.g. `--cpu=Architect:hard`), `--demo[=NAME[:LEVEL]]` (CPU vs CPU, loops).
 - Renderer: `[video] renderer="3d"` (default) or `"2d"` in `user://settings.cfg`.
 - Record footage: `godot --path . --write-movie out.avi --fixed-fps 60 -- --practice` (sim follows movie time).
-- Tests (both must print PASS): `godot --headless --path . -s tests/test_sim.gd` (game rules) and `-s tests/test_netcode.gd` (lossy-link rollback soak).
+- Tests (both must print PASS): `godot --headless --path . -s tests/test_sim.gd` (game rules) `-s tests/test_netcode.gd` (lossy-link rollback soak), `-s tests/test_cpu.gd` (CPU sanity, slow).
+- CPU league: `godot --headless --path . -s tools/league.gd -- hard 6`.
 
 ## Layout
 - `sim/` — the game. Integer-only, no nodes, no floats, no engine RNG, 1080 Hz fixed tick.
   `sim_board.gd` is Panel de Pon on a 6x(12+12 hidden) grid: every cell runs a state machine
   (swap / hover / fall / land / matched) on tick timers; chains, combos and garbage live here.
 - `sim/rollback_session.gd` — input delay + rollback; inputs are (tick, mask) change events; checksums exchanged each second.
+- `ai/cpu_player.gd` — CPU opponents: stochastic plan search on a settled-board model; personalities × levels.
 - `view/board_view.gd` — **the 2D→3D cut-off** (below).
 - `render/` — renderers that read only BoardView. `board_renderer_2d.gd` is placeholder art.
 - `autoload/` — Config (user://settings.cfg) → Controls (bindings) → Net (ENet / WebSocket, 1v1 handshake) → Scenes.

@@ -14,6 +14,9 @@ var remote_id := 0
 var rtt_ms := 0.0
 var match_seed := 0
 var local_idx := 0
+var cpu_name := "" # offline opponent; "" = endless solo
+var cpu_level := "normal"
+var demo := false # CPU plays your board too (attract mode / footage)
 
 var _ping_t := 0.0
 var _self_ready := false # rematch handshake (host side)
@@ -81,8 +84,11 @@ func leave() -> void:
 	_peer_ready = false
 
 
-func start_practice() -> void:
+## Offline match: vs a CPU personality at a level, or endless solo when name is "".
+func start_practice(name := cpu_name, level := cpu_level) -> void:
 	leave()
+	cpu_name = name
+	cpu_level = level
 	match_seed = randi()
 	local_idx = 0
 	match_started.emit()
