@@ -20,7 +20,8 @@ const STATE := ["color", "st", "tm", "aux", "chain", "gid", "reveal", "next_row"
 	"cursor_x", "cursor_y", "prev_input", "hold", "rise", "stop_t", "health", "rng", "score", "lost",
 	"busy", "need_scan", "need_support", "has_matched", "chain_n",
 	"outbox", "gar_q", "gar_t", "gar_side", "next_gid", "fx_combo", "fx_chain", "fx_t",
-	"age", "sent", "best_chain", "swaps"]
+	"age", "sent", "best_chain", "swaps",
+	"time_rate", "world_acc", "ramp_t", "cracking", "crack_hang"]
 
 # Per cell, row-major, y = 0 is the top of the hidden buffer.
 var color := PackedByteArray() # 0 empty, 1..COLORS panel, GARBAGE
@@ -64,6 +65,12 @@ var sent := 0 # garbage cells sent (stats)
 var best_chain := 1 # (stats)
 var swaps := 0 # (stats)
 
+var time_rate := SimConst.TIME_UNIT # world clock speed in 1/TIME_UNIT steps
+var world_acc := 0
+var ramp_t := 0
+var cracking := false # some garbage on this board is cracking
+var crack_hang := 0 # world ticks left of revealed panels hanging after a crack
+
 
 static func create(game_seed: int) -> SimBoard:
 	var b := SimBoard.new()
@@ -106,21 +113,42 @@ func step(input: int, live := true) -> void:
 		_handle_input(input & SimConst.DIRS)
 		return
 	age += 1
-	_handle_input(input)
+	_handle_input(input) # player clock: every tick
+	_ease_time()
+	world_acc += time_rate
+	var world := world_acc >= SimConst.TIME_UNIT # world clock: every tick, or fewer in bullet time
+	if world:
+		world_acc -= SimConst.TIME_UNIT
 	if busy:
-		_update_cells()
+		_update_cells(world)
 	else:
 		has_matched = false
+		cracking = false
 	if need_support:
 		_apply_support()
 	if need_scan:
 		_scan()
 	if chain_n > 1:
 		_check_chain_end()
-	_feed_garbage()
-	_rise(input)
-	if fx_t > 0:
-		fx_t -= 1
+	if world:
+		if crack_hang > 0:
+			crack_hang -= 1
+		_feed_garbage()
+		_rise(input)
+		if fx_t > 0:
+			fx_t -= 1
+
+
+## Ease the world clock toward bullet time while garbage cracks, and back after.
+func _ease_time() -> void:
+	var target := SimConst.TIME_SLOW if cracking or crack_hang > 0 else SimConst.TIME_UNIT
+	if time_rate == target:
+		ramp_t = 0
+		return
+	ramp_t += 1
+	if ramp_t >= SimConst.TIME_RAMP:
+		ramp_t = 0
+		time_rate += 1 if target > time_rate else -1
 
 
 func receive_garbage(slabs: PackedInt32Array) -> void:
@@ -199,9 +227,12 @@ func _try_swap() -> void:
 
 # --- per-cell update ----------------------------------------------------------
 
-func _update_cells() -> void:
+## world = false on bullet-time ticks where only the player's clock runs: swaps
+## animate, everything else holds still.
+func _update_cells(world := true) -> void:
 	busy = false
 	has_matched = false
+	cracking = false
 	var done := PackedInt32Array() # slabs already handled this tick
 	for y in range(ROWS - 1, -1, -1): # bottom-up so columns move together
 		for x in W:
@@ -210,9 +241,15 @@ func _update_cells() -> void:
 				continue
 			busy = true
 			if gid[i] != 0:
-				if not done.has(gid[i]):
+				if st[i] == MATCHED:
+					cracking = true
+					has_matched = true
+				if world and not done.has(gid[i]):
 					done.append(gid[i])
 					_update_slab(i) # first hit is the slab's bottom-left cell
+				continue
+			if not world and st[i] != SWAP_L and st[i] != SWAP_R:
+				has_matched = has_matched or st[i] == MATCHED
 				continue
 			match st[i]:
 				SWAP_L, SWAP_R:
@@ -308,7 +345,8 @@ func _update_slab(i: int) -> void:
 					chain[c] = 1
 					var below := c + W
 					if below < N and (color[below] == 0 or st[below] == HOVER or st[below] == FALL):
-						_set_state(c, HOVER, SimConst.GARBAGE_HANG_TICKS) # bullet time before the drop
+						_set_state(c, HOVER, SimConst.GARBAGE_HANG_TICKS) # hang before the drop
+				crack_hang = SimConst.GARBAGE_HANG_TICKS + SimConst.FALL_TICKS * 4
 				if h > 1:
 					_slab_set(PackedInt32Array([x0, y0, w, h - 1]), NORMAL, 0)
 				need_scan = true

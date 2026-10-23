@@ -23,7 +23,7 @@ func _draw() -> void:
 		return
 	var font := ThemeDB.fallback_font
 	var size := Vector2(SimConst.W, SimConst.H) * CELL
-	draw_rect(Rect2(Vector2.ZERO, size), BG)
+	draw_rect(Rect2(Vector2.ZERO, size), BG.lerp(Color(0.05, 0.11, 0.26), BoardView.slowmo(board)))
 
 	# Next row rising in from below, dimmed, clipped to the well.
 	var lift := BoardView.lift(board)

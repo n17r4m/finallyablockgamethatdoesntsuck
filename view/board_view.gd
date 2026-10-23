@@ -99,6 +99,11 @@ static func danger_columns(b: SimBoard) -> PackedByteArray:
 	return out
 
 
+## 0 at normal speed .. 1 in full bullet time.
+static func slowmo(b: SimBoard) -> float:
+	return float(SimConst.TIME_UNIT - b.time_rate) / (SimConst.TIME_UNIT - SimConst.TIME_SLOW)
+
+
 ## Rows of resting garbage stacked above the visible well.
 static func overflow_rows(b: SimBoard) -> int:
 	for y in SimConst.BUF:

@@ -10,6 +10,8 @@ const GARBAGE_COLOR := Color("8a8f9e")
 const W := SimConst.W
 const H := SimConst.H
 const SHAKE_HZ := 9.0
+const WELL_COLOR := Color(0.07, 0.07, 0.11)
+const BULLET_COLOR := Color(0.05, 0.11, 0.26)
 
 var board: SimBoard
 var label := ""
@@ -20,6 +22,7 @@ var _title: Label3D
 var _callout: Label3D
 var _incoming: Label3D
 var _warning: Label3D
+var _well_mat: StandardMaterial3D
 var _clock := 0.0
 
 
@@ -29,7 +32,8 @@ func _ready() -> void:
 	quad.size = Vector2(W + 0.3, H + 0.3)
 	well.mesh = quad
 	well.position = Vector3(0, 0, -0.6)
-	well.material_override = _unshaded(Color(0.07, 0.07, 0.11))
+	_well_mat = _unshaded(WELL_COLOR)
+	well.material_override = _well_mat
 	add_child(well)
 
 	var box := BoxMesh.new()
@@ -76,6 +80,7 @@ func _process(delta: float) -> void:
 	_clock += delta
 	if board == null:
 		return
+	_well_mat.albedo_color = WELL_COLOR.lerp(BULLET_COLOR, BoardView.slowmo(board))
 	var danger := BoardView.danger_columns(board)
 	var shake := absf(sin(_clock * TAU * SHAKE_HZ)) * 0.12 * (1.5 - BoardView.health(board))
 	var n := 0

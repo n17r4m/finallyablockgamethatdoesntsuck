@@ -4,8 +4,9 @@ extends SceneTree
 
 const W := SimConst.W
 const ROWS := SimConst.ROWS
-const EXPECTED_CHECKS := 16
+const EXPECTED_CHECKS := 17
 const LONG := SimConst.TICK_HZ * 8 # long enough for any scenario here to play out
+const CRACK_LONG := LONG * 3 # cracks run in bullet time
 
 var _failed := 0
 var _ran := 0
@@ -25,6 +26,7 @@ func _init() -> void:
 	_test_crack_reveals_cell_by_cell()
 	_test_story_chain_off_cracked_garbage()
 	_test_crack_ripples_from_impact()
+	_test_bullet_time()
 	_failed += EXPECTED_CHECKS - _ran
 	print("PASS" if _failed == 0 else "FAIL (%d)" % _failed)
 	quit(0 if _failed == 0 else 1)
@@ -147,7 +149,7 @@ func _test_match_converts_garbage_bottom_row() -> void:
 	for x in 3:
 		b.put(x, 2, 3) # three in a row sitting on the slab
 	var flashed := false
-	for t in LONG:
+	for t in CRACK_LONG:
 		s.step(0, 0)
 		flashed = flashed or b.st[_idx(5, 0)] == SimBoard.MATCHED
 	var bottom_panels := true
@@ -237,7 +239,7 @@ func _test_story_chain_off_cracked_garbage() -> void:
 	b.need_support = true
 	b.need_scan = true
 	var hung_before_drop := 0
-	for t in LONG:
+	for t in CRACK_LONG:
 		s.step(0, 0)
 		if b.gid[_idx(4, 2)] == 0 and b.st[_idx(4, 2)] == SimBoard.HOVER:
 			hung_before_drop += 1
@@ -273,3 +275,23 @@ func _test_crack_ripples_from_impact() -> void:
 	var bottom_before_far_top := top_hit[0] < b.tm[_idx(5, 2)] - (b.aux[_idx(5, 2)] & 0xFFFF)
 	_check(ok_order and bottom_before_far_top,
 			"crack ripples out from the impact; the bottom row near it opens before far shell cells (%s)" % top_hit)
+
+
+## While garbage cracks, the world slows but the player doesn't: swaps finish in
+## real time while the crack's timers crawl; then the clock eases back.
+func _test_bullet_time() -> void:
+	var s := _cracking_slab()
+	var b := s.boards[0]
+	_run(s, SimConst.TIME_RAMP * (SimConst.TIME_UNIT - SimConst.TIME_SLOW) + 10)
+	var slowed := b.time_rate == SimConst.TIME_SLOW
+	var crack_tm := b.tm[_idx(5, 2)]
+	b.cursor_x = 0
+	b.cursor_y = ROWS - 1
+	s.step(SimConst.SWAP, 0)
+	_run(s, SimConst.SWAP_TICKS)
+	var swap_done := b.st[_idx(0, 0)] == SimBoard.NORMAL and b.st[_idx(1, 0)] == SimBoard.NORMAL
+	var crack_advanced := crack_tm - b.tm[_idx(5, 2)]
+	_run(s, CRACK_LONG)
+	_check(slowed and swap_done and crack_advanced < SimConst.SWAP_TICKS * 0.5 and b.time_rate == SimConst.TIME_UNIT,
+			"bullet time: swap takes %d ticks while the crack advances %d; clock back to normal after" % [
+			SimConst.SWAP_TICKS, crack_advanced])

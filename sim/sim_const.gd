@@ -33,6 +33,11 @@ const POP_TICKS := 162 # 9 f: then pop one at a time, vanishing together at the 
 const REVEAL_TICKS := 270 # 15 f per cell that reveals a panel: slow enough to read and react
 const SHELL_POP_TICKS := 54 # 3 f per cell that stays garbage (upper rows)
 const GARBAGE_HANG_TICKS := 432 # 24 f: revealed panels hang before dropping
+# Bullet time: while garbage cracks, a board's world clock (falls, pops, rise, grace)
+# slows to TIME_SLOW/TIME_UNIT; the player's clock (cursor, swaps) doesn't.
+const TIME_UNIT := 16
+const TIME_SLOW := 6 # 0.375x
+const TIME_RAMP := 18 # ticks per 1/16 step when easing in or out (~10 frames end to end)
 
 const ROW_UNITS := 6480 # one row per 6 s at base rise speed
 const RAISE_SPEED := 40 # manual raise multiplier
