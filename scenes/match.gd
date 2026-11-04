@@ -3,6 +3,8 @@ extends Node2D
 ## (countdown -> play -> result -> rematch). Boards are drawn by renderers that
 ## read BoardView only; config video/renderer picks "3d" (default) or "2d".
 
+const REPLAY_DIR := "user://replays"
+
 var session: RollbackSession
 var _offline := false
 var _ended := ""
@@ -89,6 +91,7 @@ func _label(p: int) -> String:
 
 
 func _exit_tree() -> void:
+	_save_replay()
 	Controls.board_mapper = Callable()
 	Controls.reset_touch()
 	if Net.packet.is_connected(session.receive):
@@ -175,6 +178,29 @@ func _on_desynced(tick: int) -> void:
 
 func _on_opponent_left() -> void:
 	_ended = "Opponent left — esc for title"
+
+
+## Every real match is kept: a bug report is a file, and it replays exactly. Up to the last
+## checkpoint both sides agreed, so nothing here can record inputs that later changed.
+func _save_replay() -> void:
+	if _pilot or not Config.get_value("replay", "save"):
+		return
+	var replay := Replay.from_session(session)
+	if replay == null:
+		return
+	DirAccess.make_dir_recursive_absolute(REPLAY_DIR)
+	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
+	var path := "%s/%s-%d-p%d.fbgr" % [REPLAY_DIR, stamp, session.game_seed, session.local_idx]
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		push_warning("Can't save replay to %s" % path)
+		return
+	f.store_buffer(replay.encode())
+	f.close()
+	var names := DirAccess.get_files_at(REPLAY_DIR)
+	names.sort() # timestamps sort oldest first
+	for i in names.size() - int(Config.get_value("replay", "keep")):
+		DirAccess.remove_absolute("%s/%s" % [REPLAY_DIR, names[i]])
 
 
 func _notification(what: int) -> void:

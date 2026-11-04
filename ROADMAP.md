@@ -43,7 +43,7 @@ Feature list below is from memory of Crack Attack; correct it where it's wrong.
 - Data march: `tools/league.gd --positions` logs (own features, opponent features, outcome) once
   a second; `tools/league_report.py` gives Wilson CIs + ratings. Feeds step 2 above.
 - Demo/attract mode exists (`--demo`); use it for trailers and the title screen.
-- Rollback netcode with desync detection and time sync (done), spectators, replays (inputs are already a tiny log).
+- Rollback netcode with desync detection and time sync (done), spectators, replay playback (matches already record and verify).
 - Matchmaking + ranking (droplix plans: signaling server, Elo).
 - Web, mobile and console builds from one codebase.
 - Touch controls (drag to swap).

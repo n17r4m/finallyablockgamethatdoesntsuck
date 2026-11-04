@@ -44,4 +44,15 @@ func copy() -> SimState:
 
 
 func checksum() -> int:
-	return hash([tick, solo, winner, boards[0].checksum(), boards[1].checksum()])
+	return SimConst.hash64(canonical_bytes())
+
+
+## The exact bytes the state hash covers: tick i64, solo u8, winner i64, then each board.
+func canonical_bytes() -> PackedByteArray:
+	var out := StreamPeerBuffer.new()
+	out.put_64(tick)
+	out.put_u8(1 if solo else 0)
+	out.put_64(winner)
+	boards[0].write_canonical(out)
+	boards[1].write_canonical(out)
+	return out.data_array

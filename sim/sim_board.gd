@@ -14,8 +14,9 @@ const N := W * ROWS
 
 enum { NORMAL, SWAP_L, SWAP_R, HOVER, FALL, LAND, MATCHED }
 
-## Every field that is game state. copy() and checksum() walk this list, so a
-## field missing here silently breaks rollback — new state goes here.
+## Every field that is game state, in hash order. copy() and write_canonical() walk this
+## list, so a field missing here silently breaks rollback — new state goes here. Adding,
+## removing or moving one changes the state hash: see docs/engine-contract.md.
 const STATE := ["color", "st", "tm", "aux", "chain", "gid", "reveal", "next_row",
 	"cursor_x", "cursor_y", "prev_input", "hold", "rise", "stop_t", "health", "rng", "score", "lost",
 	"busy", "need_scan", "need_support", "has_matched", "chain_n",
@@ -99,10 +100,29 @@ func copy() -> SimBoard:
 
 
 func checksum() -> int:
-	var vals := []
+	var out := StreamPeerBuffer.new()
+	write_canonical(out)
+	return SimConst.hash64(out.data_array)
+
+
+## The exact bytes the state hash covers, little-endian: bool u8, int i64,
+## packed arrays a u32 element count then their elements.
+func write_canonical(out: StreamPeerBuffer) -> void:
 	for f: String in STATE:
-		vals.append(get(f))
-	return hash(vals)
+		var v: Variant = get(f)
+		match typeof(v):
+			TYPE_BOOL:
+				out.put_u8(1 if v else 0)
+			TYPE_INT:
+				out.put_64(v)
+			TYPE_PACKED_BYTE_ARRAY:
+				out.put_u32(v.size())
+				out.put_data(v)
+			TYPE_PACKED_INT32_ARRAY:
+				out.put_u32(v.size())
+				out.put_data(v.to_byte_array())
+			_:
+				push_error("SimBoard.%s has a type the state hash can't write" % f)
 
 
 ## live = false during the countdown: the cursor moves, nothing else happens.

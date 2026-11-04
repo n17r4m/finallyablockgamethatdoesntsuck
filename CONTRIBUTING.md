@@ -41,7 +41,8 @@ work under a license compatible with the above is accepted.
 ## Practicalities
 - Run `tools/check.sh` and make sure every test passes
   before opening a PR touching `sim/`.
-- Everything that affects gameplay goes in `sim/`: integer-only, no nodes, no engine RNG.
+- Everything that affects gameplay goes in `sim/`: integer-only, no nodes, no engine RNG. Changing what a
+  game does means following "Changing a rule on purpose" in `docs/engine-contract.md`.
 - Short imperative commit messages (`Add garbage blocks`, `Fix cursor wrap`).
 
 *This document describes project policy, not legal advice.*

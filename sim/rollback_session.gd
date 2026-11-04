@@ -33,6 +33,8 @@ const SLEW_SHIFT := 4 # drop at most 1 tick in 16 (6%), too little to notice in 
 const SLEW_SHIFT_COUNTDOWN := 2 # ...and 1 in 4 before the game starts, when nothing's at stake
 
 var state: SimState
+var game_seed: int
+var check_log := PackedInt64Array() # (tick, hash) pairs of every final checkpoint, for replays
 var local_idx: int
 var input_delay: int
 var remote_frontier := -1
@@ -56,8 +58,9 @@ var _slew := 0 # ticks still to drop
 var _slew_acc := 0 # ticks run towards the next drop
 
 
-func _init(game_seed: int, idx: int, delay_ticks: int, offline := false, solo := offline) -> void:
-	state = SimState.create(game_seed, solo)
+func _init(seed_value: int, idx: int, delay_ticks: int, offline := false, solo := offline) -> void:
+	game_seed = seed_value
+	state = SimState.create(seed_value, solo)
 	local_idx = idx
 	input_delay = delay_ticks
 	if offline:
@@ -185,6 +188,17 @@ func _take_slew(n: int) -> int:
 	return drop
 
 
+## The agreed inputs up to the last final checkpoint, as parallel (ticks, masks) arrays.
+func input_log(p: int, end_tick: int) -> Array:
+	var ticks := PackedInt64Array()
+	var masks := PackedInt32Array()
+	for i in range(1, _ticks[p].size()): # index 0 is the "nothing pressed yet" sentinel
+		if _ticks[p][i] < end_tick:
+			ticks.append(_ticks[p][i])
+			masks.append(_masks[p][i])
+	return [ticks, masks]
+
+
 func input_at(p: int, t: int) -> int:
 	return _masks[p][_ticks[p].bsearch(t, false) - 1]
 
@@ -210,6 +224,10 @@ func _finalize_checks() -> void:
 	for k in _checks.keys():
 		if k - 1 <= remote_frontier:
 			_final_checks[k] = _checks[k]
+			# A rollback can recompute a checkpoint that's already final, so log each once.
+			if check_log.is_empty() or k > check_log[-2]:
+				check_log.append(k)
+				check_log.append(_checks[k])
 			_checks.erase(k)
 			_compare(k)
 	while _final_checks.size() > 4:

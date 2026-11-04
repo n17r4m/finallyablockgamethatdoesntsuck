@@ -4,6 +4,9 @@ class_name SimConst
 ## 720 divides evenly by 60, 72, 90, 120, 144, 180, 240 and 360, so those displays get a
 ## steady number of ticks per frame. Any other rate still works, off the wall clock.
 
+## Bump whenever a rule or timing changes what a game does: old replays stop verifying,
+## and tools/make_golden.gd must be rerun. See docs/engine-contract.md.
+const RULES_VERSION := 1
 const TICK_HZ := 720
 const TICKS_PER_FRAME := 12 # at 60 fps
 const W := 6
@@ -24,6 +27,7 @@ const DIRS := UP | DOWN | LEFT | RIGHT
 # Absolute cursor placement (touch/mouse): flag + left cell x (3 bits) + visible row y (4 bits).
 const TARGET := 1 << 16
 const TARGET_MASK := TARGET | (0x7 << 8) | (0xF << 12)
+const INPUT_BITS := DIRS | SWAP | RAISE | TARGET_MASK # anything else is not an input
 
 const REPEAT_DELAY := 120 # ~167 ms before cursor auto-repeat
 const REPEAT_RATE := 36 # ~50 ms per repeat step
@@ -65,6 +69,14 @@ const COMBO_GARBAGE := {
 ## Input bits that put the cursor's left cell at (x, visible row y from the top).
 static func target(x: int, y: int) -> int:
 	return TARGET | (clampi(x, 0, W - 2) << 8) | (clampi(y, 0, H - 1) << 12)
+
+
+## First 8 bytes of SHA-256, read little-endian. Any language can reproduce this exactly.
+static func hash64(bytes: PackedByteArray) -> int:
+	var h := HashingContext.new()
+	h.start(HashingContext.HASH_SHA256)
+	h.update(bytes)
+	return h.finish().decode_s64(0)
 
 
 ## Garbage slabs travel as one int: width + height * 8.

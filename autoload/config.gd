@@ -5,6 +5,7 @@ const PATH := "user://settings.cfg"
 const DEFAULTS := {
 	"player": {"name": "Player"},
 	"net": {"address": "127.0.0.1", "port": 47100, "transport": "enet", "input_delay_frames": 2},
+	"replay": {"save": true, "keep": 50},
 	"video": {"fullscreen": false, "vsync": true, "renderer": "3d"},
 }
 

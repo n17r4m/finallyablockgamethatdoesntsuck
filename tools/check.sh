@@ -31,6 +31,16 @@ run() {
 run test_sim
 run test_touch
 run test_netcode
+run test_golden
+if command -v python3 > /dev/null; then
+	if python3 tools/replay_check.py tests/golden > /dev/null; then
+		echo "PASS replay_check.py"
+	else
+		echo "FAIL replay_check.py"
+		python3 tools/replay_check.py tests/golden | tail -n 10
+		failed=1
+	fi
+fi
 if [ $full -eq 1 ]; then
 	run test_net_matrix --seeds=8 --cpu=2
 	run test_sim_fuzz --minutes=10

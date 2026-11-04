@@ -92,6 +92,11 @@ func _inv(b: SimBoard, tick: int) -> void:
 			slabs[b.gid[i]].append(i)
 	for g: int in slabs:
 		_inv_slab(b, slabs[g], swap_col, tick)
+	# A chain flag lasts only while a panel is in motion, so a swap can never move one.
+	if not b.need_support and not b.need_scan:
+		for i in N:
+			if b.chain[i] != 0 and b._resting(i):
+				_v("resting panel still flagged as chain", tick, b)
 	if not b.need_support:
 		for i in range(0, N - W):
 			if b.color[i] != 0 and b.gid[i] == 0 and b._resting(i) and b.color[i + W] == 0 and not _near_swap(swap_col, i % W):

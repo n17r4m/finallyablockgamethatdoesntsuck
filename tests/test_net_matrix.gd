@@ -99,6 +99,7 @@ func _test_detector_fires() -> void:
 func _run_profile(pname: String, bot: String, n: int, first_seed: int) -> void:
 	var desyncs := 0
 	var unconverged := 0
+	var bad_replays := 0
 	var gap := 0.0
 	var burden := [0.0, 0.0]
 	var ticks := 0
@@ -106,6 +107,7 @@ func _run_profile(pname: String, bot: String, n: int, first_seed: int) -> void:
 		var r := _run(pname, first_seed + i, bot)
 		desyncs += r.desyncs
 		unconverged += 0 if r.converged else 1
+		bad_replays += 0 if r.replays_ok else 1
 		gap += r.gap_ms / n
 		burden[0] += r.burden[0] / n
 		burden[1] += r.burden[1] / n
@@ -115,6 +117,8 @@ func _run_profile(pname: String, bot: String, n: int, first_seed: int) -> void:
 		_fail("%s/%s: %d desyncs" % [pname, bot, desyncs])
 	if unconverged > 0:
 		_fail("%s/%s: %d runs did not converge" % [pname, bot, unconverged])
+	if bad_replays > 0:
+		_fail("%s/%s: %d runs saved a replay that doesn't verify" % [pname, bot, bad_replays])
 	# Rollbacks on one side come from the other side's inputs, so loads only compare when
 	# both play at the same rate. CPU players don't, and stop altogether once they lose.
 	var high := maxf(burden[0], burden[1])
@@ -207,8 +211,17 @@ func _run(pname: String, sd: int, bot: String, sabotage_frame := -1) -> Dictiona
 	var replay := SimState.create(game_seed)
 	while replay.tick < target:
 		replay.step(sess[0].input_at(0, replay.tick), sess[0].input_at(1, replay.tick))
+	# What each side would save must stand up to re-simulation, on its own, as a referee sees it.
+	var replays_ok := sabotage_frame >= 0
+	if sabotage_frame < 0:
+		replays_ok = true
+		for s in sess:
+			var saved := Replay.from_session(s)
+			if saved == null or Replay.decode(saved.encode()).verify() != "":
+				replays_ok = false
 	var secs := (FRAMES - WINDOW) / 60.0
 	return {
+		"replays_ok": replays_ok,
 		"desyncs": desyncs[0],
 		"converged": sess[0].state.tick == target and sess[1].state.tick == target
 				and sess[0].state.checksum() == sess[1].state.checksum()
