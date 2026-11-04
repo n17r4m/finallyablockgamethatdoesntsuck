@@ -10,6 +10,14 @@ extends RefCounted
 ## Each packet carries the sender's frontier: the tick up to which its input is
 ## final. We never run more than MAX_AHEAD past the remote frontier (we stall
 ## instead), which bounds rollback depth and slows down whichever side is ahead.
+##
+## Stalling only stops the bleeding: a gap between the clocks would otherwise last the
+## whole match, with the side ahead taking every rollback. So each side measures its
+## advantage (its tick minus the tick on the newest packet) and tells the other. A side's
+## advantage is how far ahead it runs of the inputs it can see, so equal advantages mean
+## equal rollbacks, even over a route that's slower one way. Whichever side has more drops
+## a few ticks until they match. Only timing changes, never (tick, input), so the two
+## sides can act on different measurements without any risk to determinism.
 
 signal outgoing(packet: Dictionary)
 signal desynced(tick: int)
@@ -19,12 +27,17 @@ const CHECK_EVERY := SimConst.TICK_HZ # exchange a checksum once per second
 const MAX_AHEAD := 270 # 250 ms of ticks
 const MAX_CHANGES_PER_PACKET := 256
 const NEVER := 1 << 40
+const SYNC_EVERY := SimConst.TICK_HZ / 2 # re-measure advantage twice a second
+const SYNC_DEADBAND := SimConst.TICKS_PER_FRAME / 2 # leave gaps under half a frame alone
+const SLEW_SHIFT := 4 # drop at most 1 tick in 16 (6%), too little to notice in play...
+const SLEW_SHIFT_COUNTDOWN := 2 # ...and 1 in 4 before the game starts, when nothing's at stake
 
 var state: SimState
 var local_idx: int
 var input_delay: int
 var remote_frontier := -1
-var stats := {"rollbacks": 0, "resim": 0, "stalls": 0}
+var advantage := NEVER # ticks ahead of the peer's packets, lowest of the last sample period
+var stats := {"rollbacks": 0, "resim": 0, "stalls": 0, "slewed": 0}
 
 var _ticks: Array[PackedInt64Array] = [PackedInt64Array([-1]), PackedInt64Array([-1])]
 var _masks: Array[PackedInt32Array] = [PackedInt32Array([0]), PackedInt32Array([0])]
@@ -35,6 +48,12 @@ var _snaps := {} # tick -> SimState, taken before stepping that tick
 var _checks := {} # tick -> checksum, not yet final
 var _final_checks := {} # tick -> checksum, final; recent ones ride along in packets
 var _remote_checks := {}
+var _remote_advantage := NEVER
+var _remote_tick := -1 # sender's tick on the newest packet
+var _adv_sample := NEVER # lowest advantage this period: jitter only ever adds to it
+var _sync_tick := 0 # when the current sample period started
+var _slew := 0 # ticks still to drop
+var _slew_acc := 0 # ticks run towards the next drop
 
 
 func _init(game_seed: int, idx: int, delay_ticks: int, offline := false, solo := offline) -> void:
@@ -48,15 +67,16 @@ func _init(game_seed: int, idx: int, delay_ticks: int, offline := false, solo :=
 ## Whether set_local_input would record anything this frame (false while stalled).
 ## Sample stateful input (touch drags) only when this is true, or it gets lost.
 func input_open() -> bool:
-	return state.tick + input_delay > _ticks[local_idx][-1]
+	return state.tick + input_delay > _local_frontier
 
 
 ## Call once per frame before advance(). The first sample for a given target
-## tick wins, so a frontier we've already sent is never contradicted.
+## tick wins, so a frontier we've already sent is never contradicted: the peer
+## discards anything at or before it, and acting on it here would be a desync.
 func set_local_input(mask: int) -> void:
 	var t := state.tick + input_delay
 	var ts := _ticks[local_idx]
-	if t <= ts[-1]:
+	if t <= _local_frontier:
 		return
 	if _masks[local_idx][-1] != mask:
 		ts.append(t)
@@ -77,6 +97,7 @@ func set_remote_input(mask: int) -> void:
 
 func receive(pkt: Variant) -> void:
 	if not (pkt is Dictionary and pkt.get("f") is int and pkt.get("a") is int
+			and pkt.get("s") is int and pkt.get("v") is int
 			and pkt.get("t") is PackedInt64Array and pkt.get("m") is PackedInt32Array
 			and pkt.get("c") is Dictionary):
 		return
@@ -97,6 +118,10 @@ func receive(pkt: Variant) -> void:
 	if remote_frontier != NEVER:
 		remote_frontier = maxi(remote_frontier, pkt.f)
 	_acked = maxi(_acked, pkt.a)
+	_adv_sample = mini(_adv_sample, state.tick - pkt.s)
+	if pkt.s > _remote_tick: # packets can arrive out of order
+		_remote_tick = pkt.s
+		_remote_advantage = pkt.v
 	for k in pkt.c:
 		if k is int and pkt.c[k] is int:
 			_remote_checks[k] = pkt.c[k]
@@ -114,6 +139,8 @@ func advance(n: int) -> int:
 			stats.resim += 1
 	_rewind_to = NEVER
 
+	_measure_advantage()
+	n -= _take_slew(n)
 	var done := 0
 	while done < n:
 		if state.tick > remote_frontier + MAX_AHEAD:
@@ -126,6 +153,36 @@ func advance(n: int) -> int:
 	_finalize_checks()
 	_send()
 	return done
+
+
+## Closes a sample period and sets how many ticks to drop. The gain is 1/2 and the plan is
+## replaced rather than added to, so measurements still in flight can't make it overshoot.
+func _measure_advantage() -> void:
+	if state.tick - _sync_tick < SYNC_EVERY or _adv_sample == NEVER:
+		return
+	advantage = _adv_sample
+	_adv_sample = NEVER
+	_sync_tick = state.tick
+	_slew = 0
+	if _remote_advantage != NEVER:
+		var excess := (advantage - _remote_advantage) / 2 # the gap to close is shared
+		if excess > SYNC_DEADBAND:
+			_slew = excess / 2
+
+
+## How many of the n ticks due this frame to skip. Tracked per tick, not per
+## call, so the rate doesn't depend on the display's frame rate.
+func _take_slew(n: int) -> int:
+	if _slew <= 0:
+		_slew_acc = 0
+		return 0
+	var shift := SLEW_SHIFT_COUNTDOWN if state.tick < SimConst.COUNTDOWN_TICKS else SLEW_SHIFT
+	_slew_acc += n
+	var drop := mini(mini(_slew, _slew_acc >> shift), n)
+	_slew -= drop
+	_slew_acc -= drop << shift
+	stats.slewed += drop
+	return drop
 
 
 func input_at(p: int, t: int) -> int:
@@ -178,4 +235,6 @@ func _send() -> void:
 		"m": _masks[local_idx].slice(from, to),
 		"a": _ticks[1 - local_idx][-1],
 		"c": _final_checks.duplicate(),
+		"s": state.tick,
+		"v": advantage,
 	})

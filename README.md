@@ -11,7 +11,11 @@ Panel-de-Pon-style 1v1 versus, Godot 4.7, pure GDScript, rollback netcode.
   touch/mouse: drag a block sideways to carry it, tap to move the cursor, hold the rising row to raise.
 - Renderer: `[video] renderer="3d"` (default) or `"2d"` in `user://settings.cfg`.
 - Record footage: `godot --path . --write-movie out.avi --fixed-fps 60 -- --practice` (sim follows movie time).
-- Tests (both must print PASS): `godot --headless --path . -s tests/test_sim.gd` (game rules) `-s tests/test_netcode.gd` (lossy-link rollback soak), `-s tests/test_touch.gd` (touch controls), `-s tests/test_cpu.gd` (CPU sanity, slow).
+- Tests: `tools/check.sh` (about 2 minutes), or `tools/check.sh --full` for more seeds, CPU players and longer fuzzing. Set `GODOT` to use a
+  different engine binary. Each test prints PASS and can also run alone with `godot --headless --path . -s tests/NAME.gd`:
+  `test_sim` (game rules), `test_touch` (touch controls), `test_netcode` (lossy-link rollback soak), `test_net_matrix` (freezes, spikes, blackouts,
+  lopsided routes and fairness), `test_sim_fuzz` (board invariants, snapshots, P1/P2 mirror), `test_cpu` (CPU sanity, slow).
+- Sim cost on busy boards: `godot --headless --path . -s tools/bench_sim.gd`, on an idle machine.
 - CPU league (logs to `data/`, gitignored): `nice -n 19 godot --headless --path . -s tools/league.gd --
   --agents=beam/balanced/hard,flatmc/chainer/hard,Architect:max --games=10 --out=data/run1 [--positions]`,
   then `python3 tools/league_report.py data/run1`.
@@ -20,7 +24,8 @@ Panel-de-Pon-style 1v1 versus, Godot 4.7, pure GDScript, rollback netcode.
 - `sim/` — the game. Integer-only, no nodes, no floats, no engine RNG, 1080 Hz fixed tick.
   `sim_board.gd` is Panel de Pon on a 6x(12+12 hidden) grid: every cell runs a state machine
   (swap / hover / fall / land / matched) on tick timers; chains, combos and garbage live here.
-- `sim/rollback_session.gd` — input delay + rollback; inputs are (tick, mask) change events; checksums exchanged each second.
+- `sim/rollback_session.gd` — input delay + rollback; inputs are (tick, mask) change events; checksums exchanged each second;
+  time sync keeps rollbacks even by slowing whichever side runs further ahead of the other's inputs.
 - `ai/cpu_player.gd` — CPU opponents: stochastic plan search on a settled-board model; personalities × levels.
 - `view/board_view.gd` — **the 2D→3D cut-off** (below).
 - `render/` — renderers that read only BoardView. `board_renderer_2d.gd` is placeholder art.

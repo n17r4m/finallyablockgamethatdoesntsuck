@@ -39,7 +39,7 @@ When contributing assets, state their origin and license in the PR. Only origina
 work under a license compatible with the above is accepted.
 
 ## Practicalities
-- Run `godot --headless --path . -s tests/test_netcode.gd` and make sure it prints PASS
+- Run `tools/check.sh` and make sure every test passes
   before opening a PR touching `sim/`.
 - Everything that affects gameplay goes in `sim/`: integer-only, no nodes, no engine RNG.
 - Short imperative commit messages (`Add garbage blocks`, `Fix cursor wrap`).
