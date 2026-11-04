@@ -14,7 +14,7 @@ class_name BoardView
 
 const SWAP_DEPTH := 0.45 # cells toward/away from the viewer at mid-swap
 const POP_LIFE := 2.0 # pop burst length, in POP_TICKS
-const FLASH_PERIOD := 54 # ticks per flash on/off
+const FLASH_PERIOD := 36 # ticks per flash on/off
 
 
 ## One Dictionary per block that should be drawn:

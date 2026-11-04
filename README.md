@@ -21,7 +21,7 @@ Panel-de-Pon-style 1v1 versus, Godot 4.7, pure GDScript, rollback netcode.
   then `python3 tools/league_report.py data/run1`.
 
 ## Layout
-- `sim/` — the game. Integer-only, no nodes, no floats, no engine RNG, 1080 Hz fixed tick.
+- `sim/` — the game. Integer-only, no nodes, no floats, no engine RNG, 720 Hz fixed tick.
   `sim_board.gd` is Panel de Pon on a 6x(12+12 hidden) grid: every cell runs a state machine
   (swap / hover / fall / land / matched) on tick timers; chains, combos and garbage live here.
 - `sim/rollback_session.gd` — input delay + rollback; inputs are (tick, mask) change events; checksums exchanged each second;
@@ -42,7 +42,7 @@ the view side; the sim never learns where anything is drawn and must never depen
 
 Moving to 3D therefore means writing `render/board_renderer_3d.gd` (e.g. a MultiMesh fed
 `pos`/`scale`), swapping it in `scenes/match.gd:_ready`, and changing the renderer to Forward+/Mobile
-if needed. No sim, netcode or test changes. Because the sim ticks at 1080 Hz, view positions are
+if needed. No sim, netcode or test changes. Because the sim ticks at 720 Hz, view positions are
 already smooth at any display rate — no interpolation layer required.
 
 ## Rules for sim code

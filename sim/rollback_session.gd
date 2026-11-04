@@ -24,7 +24,7 @@ signal desynced(tick: int)
 
 const SNAP_EVERY := SimConst.TICKS_PER_FRAME
 const CHECK_EVERY := SimConst.TICK_HZ # exchange a checksum once per second
-const MAX_AHEAD := 270 # 250 ms of ticks
+const MAX_AHEAD := 180 # 250 ms of ticks
 const MAX_CHANGES_PER_PACKET := 256
 const NEVER := 1 << 40
 const SYNC_EVERY := SimConst.TICK_HZ / 2 # re-measure advantage twice a second

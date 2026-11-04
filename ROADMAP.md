@@ -9,7 +9,7 @@ Feature list below is from memory of Crack Attack; correct it where it's wrong.
 ## Parity
 | Crack Attack | Us | Status |
 |---|---|---|
-| Panel de Pon rules: swap, gravity, combos, chains | per-panel state machine, 1080 Hz | done |
+| Panel de Pon rules: swap, gravity, combos, chains | per-panel state machine, 720 Hz | done |
 | Garbage: combo slabs, chain slabs, shatter into panels | multi-row slabs; cell-by-cell reveal of pre-rolled colours; revealed panels hang, then drop with chain status | done (plain FX) |
 | 3D rendered blocks, lit, animated | BoardRenderer3D over BoardView | first pass |
 | Combo / chain signs | callouts | basic |
