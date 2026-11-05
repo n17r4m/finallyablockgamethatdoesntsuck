@@ -1,6 +1,6 @@
 # Finally A Block Game That Doesn't Suck
 
-Panel-de-Pon-style 1v1 versus, Godot 4.7, GDScript, rollback netcode. The game itself is still all GDScript; a Rust copy of the rules runs alongside it, held to the same recorded games. It loads into Godot on desktop, Android and web, but the game doesn't play on it yet.
+Panel-de-Pon-style 1v1 versus, Godot 4.7, GDScript, rollback netcode. The game plays on a Rust copy of the rules wherever its extension loads, and on the GDScript ones otherwise; both are held to the same recorded games, and can play each other online. The rest of the game is GDScript.
 
 ## Run
 - Editor: open `project.godot` with `../Godot/Godot_v4.7.2-stable_linux.x86_64`.
@@ -31,8 +31,8 @@ Panel-de-Pon-style 1v1 versus, Godot 4.7, GDScript, rollback netcode. The game i
 - `sim/rollback_session.gd` — input delay + rollback; inputs are (tick, mask) change events; checksums exchanged each second;
   time sync keeps rollbacks even by slowing whichever side runs further ahead of the other's inputs.
 - `sim/replay.gd` — a whole game as data: seed, setup, inputs and state hashes. Verifies by re-simulating.
-- `rust/sim/` — the same rules in Rust, for the server and for faster clients. `board.rs` follows `sim_board.gd` function by function. Not used by the game yet.
-- `rust/godot/`, `ext/` — the Godot extension that exposes those rules as `RustSim`. Build it with `tools/build_rust_ext.sh`; see [docs/platforms.md](docs/platforms.md).
+- `rust/sim/` — the same rules in Rust, for the server and for faster clients. `board.rs` follows `sim_board.gd` function by function.
+- `rust/godot/`, `ext/` — the Godot extension that exposes those rules as `RustSim`, which `sim/rust_state.gd` wraps for the game. `[sim] backend` in settings is `auto` or `gdscript`. Build it with `tools/build_rust_ext.sh`; see [docs/platforms.md](docs/platforms.md).
 - `ai/cpu_player.gd` — CPU opponents: stochastic plan search on a settled-board model; personalities × levels.
 - `view/board_view.gd` — **the 2D→3D cut-off** (below).
 - `render/` — renderers that read only BoardView. `board_renderer_2d.gd` is placeholder art.

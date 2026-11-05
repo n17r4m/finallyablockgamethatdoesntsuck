@@ -33,6 +33,11 @@ func step(input0: int, input1: int) -> void:
 	tick += 1
 
 
+## Brings boards up to date for readers. They always are here; see RustState.
+func refresh_view() -> void:
+	pass
+
+
 func copy() -> SimState:
 	var s := SimState.new()
 	s.tick = tick

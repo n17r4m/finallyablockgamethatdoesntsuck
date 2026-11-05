@@ -58,9 +58,10 @@ var _slew := 0 # ticks still to drop
 var _slew_acc := 0 # ticks run towards the next drop
 
 
-func _init(seed_value: int, idx: int, delay_ticks: int, offline := false, solo := offline) -> void:
+## backend: "gdscript", or "auto" for the Rust rules wherever they're available.
+func _init(seed_value: int, idx: int, delay_ticks: int, offline := false, solo := offline, backend := "gdscript") -> void:
 	game_seed = seed_value
-	state = SimState.create(seed_value, solo)
+	state = RustState.make(seed_value, solo) if backend == "auto" and RustState.available() else SimState.create(seed_value, solo)
 	local_idx = idx
 	input_delay = delay_ticks
 	if offline:
@@ -155,6 +156,7 @@ func advance(n: int) -> int:
 	_prune()
 	_finalize_checks()
 	_send()
+	state.refresh_view()
 	return done
 
 

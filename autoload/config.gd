@@ -6,6 +6,7 @@ const DEFAULTS := {
 	"player": {"name": "Player"},
 	"net": {"address": "127.0.0.1", "port": 47100, "transport": "enet", "input_delay_frames": 2},
 	"replay": {"save": true, "keep": 50},
+	"sim": {"backend": "auto"}, # "auto" uses the Rust rules where available, "gdscript" never does
 	"video": {"fullscreen": false, "vsync": true, "renderer": "3d"},
 }
 

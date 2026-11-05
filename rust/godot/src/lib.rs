@@ -31,9 +31,11 @@ impl RustSim {
         self.state = State::new(game_seed, solo);
     }
 
+    /// Returns the winner, so GDScript needn't cross the bridge again to learn it.
     #[func]
-    fn step(&mut self, input0: i64, input1: i64) {
+    fn step(&mut self, input0: i64, input1: i64) -> i64 {
         self.state.step(input0 as u32, input1 as u32);
+        self.state.winner
     }
 
     /// Steps once per pair of inputs, so a long run costs one call across the bridge.
@@ -67,6 +69,56 @@ impl RustSim {
     #[func]
     fn canonical_bytes(&self) -> PackedByteArray {
         PackedByteArray::from(self.state.canonical_bytes().as_slice())
+    }
+
+    /// Every field of one board, in the order of SimBoard.STATE. It's how the renderers and
+    /// CPU players see the game, and RustState proves against the hash that nothing is missed.
+    #[func]
+    fn board_fields(&self, p: i64) -> Array<Variant> {
+        let b = &self.state.boards[p as usize];
+        let mut out = Array::new();
+        let mut add = |v: Variant| out.push(&v);
+        add(PackedByteArray::from(b.color.as_slice()).to_variant());
+        add(PackedByteArray::from(b.st.as_slice()).to_variant());
+        add(PackedInt32Array::from(b.tm.as_slice()).to_variant());
+        add(PackedInt32Array::from(b.aux.as_slice()).to_variant());
+        add(PackedByteArray::from(b.chain.as_slice()).to_variant());
+        add(PackedInt32Array::from(b.gid.as_slice()).to_variant());
+        add(PackedByteArray::from(b.reveal.as_slice()).to_variant());
+        add(PackedByteArray::from(b.next_row.as_slice()).to_variant());
+        add(b.cursor_x.to_variant());
+        add(b.cursor_y.to_variant());
+        add(i64::from(b.prev_input).to_variant());
+        add(b.hold.to_variant());
+        add(b.rise.to_variant());
+        add(b.stop_t.to_variant());
+        add(b.health.to_variant());
+        add(i64::from(b.rng).to_variant());
+        add(b.score.to_variant());
+        add(b.lost.to_variant());
+        add(b.busy.to_variant());
+        add(b.need_scan.to_variant());
+        add(b.need_support.to_variant());
+        add(b.has_matched.to_variant());
+        add(b.chain_n.to_variant());
+        add(PackedInt32Array::from(b.outbox.as_slice()).to_variant());
+        add(PackedInt32Array::from(b.gar_q.as_slice()).to_variant());
+        add(b.gar_t.to_variant());
+        add(b.gar_side.to_variant());
+        add(b.next_gid.to_variant());
+        add(b.fx_combo.to_variant());
+        add(b.fx_chain.to_variant());
+        add(b.fx_t.to_variant());
+        add(b.age.to_variant());
+        add(b.sent.to_variant());
+        add(b.best_chain.to_variant());
+        add(b.swaps.to_variant());
+        add(b.time_rate.to_variant());
+        add(b.world_acc.to_variant());
+        add(b.ramp_t.to_variant());
+        add(b.cracking.to_variant());
+        add(b.crack_hang.to_variant());
+        out
     }
 
     /// Empty if the replay is genuine, otherwise why it isn't.

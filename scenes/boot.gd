@@ -5,7 +5,7 @@ extends Node
 
 func _ready() -> void:
 	if OS.has_feature("engine_probe"):
-		add_child(EngineProbe.new())
+		add_child(load("res://tests/engine_probe.gd").new()) # by path: game builds leave tests out
 		return
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--"):

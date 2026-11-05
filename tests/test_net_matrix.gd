@@ -1,7 +1,8 @@
 extends SceneTree
 ## Rollback sessions under realistic network failures, driven the way scenes/match.gd
 ## drives them: wall-clock ticks, capped catch-up, and no banking of ticks lost to a stall.
-##   godot --headless --path . -s tests/test_net_matrix.gd [-- --seeds=4 --cpu=0]
+##   godot --headless --path . -s tests/test_net_matrix.gd [-- --seeds=4 --cpu=0 --backends=gdscript]
+## --backends picks the rules each side runs: gdscript, rust, or mixed (one of each).
 ##
 ## Every run must never desync and must converge to the exact state an offline replay of
 ## the agreed inputs produces. Profiles also check fairness: once settled, neither side may
@@ -34,6 +35,7 @@ const PROFILES := {
 }
 
 var _failed := 0
+var _rules: Array = ["gdscript", "gdscript"]
 
 
 func _init() -> void:
@@ -44,6 +46,13 @@ func _init() -> void:
 			seeds = a.trim_prefix("--seeds=").to_int()
 		elif a.begins_with("--cpu="):
 			cpu_seeds = a.trim_prefix("--cpu=").to_int()
+		elif a.begins_with("--backends="):
+			var which := a.trim_prefix("--backends=")
+			if which != "gdscript" and not RustState.available():
+				print("FAIL --backends=%s needs the Rust extension" % which)
+				quit(1)
+				return
+			_rules = ["auto", "auto"] if which == "rust" else (["auto", "gdscript"] if which == "mixed" else _rules)
 
 	_test_frontier_never_contradicted()
 	_test_detector_fires()
@@ -131,7 +140,10 @@ func _run(pname: String, sd: int, bot: String, sabotage_frame := -1) -> Dictiona
 	var rng := RandomNumberGenerator.new()
 	rng.seed = sd * 7919 + 13
 	var game_seed := sd * 104729 + 7
-	var sess: Array[RollbackSession] = [RollbackSession.new(game_seed, 0, 2 * TPF), RollbackSession.new(game_seed, 1, 2 * TPF)]
+	# The sabotage below writes to a board, which only means something on GDScript.
+	var rules: Array = ["gdscript", "gdscript"] if sabotage_frame >= 0 else _rules
+	var sess: Array[RollbackSession] = [RollbackSession.new(game_seed, 0, 2 * TPF, false, false, rules[0]),
+			RollbackSession.new(game_seed, 1, 2 * TPF, false, false, rules[1])]
 	var q: Array = [[], []] # q[i] = packets inbound to client i
 	var frame := [0]
 	var lossy := [true]

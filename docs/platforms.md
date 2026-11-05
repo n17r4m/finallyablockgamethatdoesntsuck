@@ -1,8 +1,12 @@
 # Where the Rust rules run
 
 `rust/godot` is a thin Godot extension over `rust/sim`, exposed to GDScript as `RustSim`. The
-game doesn't play on it yet. This page records where it has been proven to work, and how to
-check a new platform.
+game plays on it wherever it loads: `sim/rust_state.gd` steps, copies and hashes in Rust, and
+fills ordinary `SimBoard`s once a frame for the renderers, CPU players and touch controls to
+read. Without the library, or with different rules in it, the game falls back to GDScript. Set
+`[sim] backend` to `gdscript` to force that. The in-game HUD says which rules are running.
+
+This page records where it has been proven to work, and how to check a new platform.
 
 ## Results
 
@@ -12,6 +16,7 @@ four recorded CPU games. Timings are per tick for both boards.
 
 | Platform | Result | Rust | GDScript | Worst 192-tick rollback, Rust / GDScript |
 |---|---|---|---|---|
+| Pixel 10, Android 17, arm64, release | Pass | 0.16 µs | 14.56 µs | 0.06 / 2.60 ms |
 | Linux x86-64, debug | Pass | 0.91 µs | 20.55 µs | 0.20 / 4.08 ms |
 | Android x86-64, emulator, debug | Pass | 0.94 µs | 23.21 µs | 0.20 / 4.29 ms |
 | Android arm64, translated on the emulator, debug | Pass, timings meaningless | | | |
@@ -22,7 +27,7 @@ The browser's clock only ticks every 0.1 ms, so web's single-rollback figures ar
 
 Not tested:
 
-- **A real phone.** Nothing here measures phone speed, heat or battery.
+- **Slower phones.** The Pixel 10 is one fast phone, and battery use hasn't been measured.
 - **iOS.** Building it needs a Mac. No part of it has been tried.
 - **Firefox and Safari.** godot-rust's guide says Firefox supports extensions less fully.
 - **Threaded web builds.** Only the single-threaded build exists.
@@ -33,6 +38,19 @@ under Node, with no Godot involved, also measures 0.43 µs. `panic=abort` isn't 
 
 Extension support adds about 1 MB to a gzipped web download (10.1 to 11.1 MB of engine), plus
 0.14 MB for the Rust code itself.
+
+## The game on those rules
+
+- **Pixel 10, release:** a CPU match with touch drags, on Rust, ran without a crash.
+- **Chromium, release:** a CPU match with key presses, on Rust. The emulator can't check this:
+  its software GPU rejects Godot's canvas shader, so the screen stays black.
+- **Linux over real ENet:** Rust against Rust and Rust against GDScript, with no desync and every
+  saved replay verified. Neither player pressed anything, so these had no rollbacks. Rollbacks
+  are covered by `tests/test_backends.gd` and `test_net_matrix --backends=mixed`, over a
+  simulated link only.
+
+Per frame on Linux, session included, a CPU game costs 55 µs on Rust and 359 µs on GDScript,
+with the worst frame at 121 µs and 816 µs.
 
 ## Building
 
@@ -58,7 +76,8 @@ These are the parts most likely to surprise someone:
 
 ## Running the probe
 
-Export the "Android Probe" or "Web Probe" preset. Those builds boot straight into the probe
+The "Android" and "Web" presets build the game, without `tests/` and `tools/`. Export the
+"Android Probe" or "Web Probe" preset for the check. Those builds boot straight into the probe
 and print to the screen and the log (`adb logcat -s godot`, or the browser console). On
 desktop: `godot --headless --path . -s tests/test_rust_bridge.gd`.
 

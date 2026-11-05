@@ -21,13 +21,14 @@ func _ready() -> void:
 	# Input delay only hides network lag from rollback, so offline play has none.
 	var delay: int = 0 if _offline else Config.get_value("net", "input_delay_frames") * SimConst.TICKS_PER_FRAME
 	var solo := _offline and Net.cpu_name == ""
-	session = RollbackSession.new(Net.match_seed, Net.local_idx, delay, _offline, solo)
+	session = RollbackSession.new(Net.match_seed, Net.local_idx, delay, _offline, solo, Config.get_value("sim", "backend"))
 	if _offline and not solo:
 		_cpu = CpuPlayer.opponent(Net.cpu_name, Net.cpu_level, Net.match_seed)
 		if Net.demo:
 			_pilot = CpuPlayer.opponent("Overmind", Net.cpu_level, Net.match_seed + 1)
 	session.desynced.connect(_on_desynced)
-	print("match start seed=%d idx=%d %s delay=%d" % [Net.match_seed, Net.local_idx, "offline" if _offline else "online", delay])
+	print("match start seed=%d idx=%d %s delay=%d rules=%s" % [Net.match_seed, Net.local_idx,
+			"offline" if _offline else "online", delay, _rules_name()])
 	if not _offline:
 		session.outgoing.connect(Net.send)
 		Net.packet.connect(session.receive)
@@ -40,6 +41,10 @@ func _ready() -> void:
 	if not _pilot:
 		Controls.board_mapper = _views[Net.local_idx].screen_to_cell
 	_last_usec = Time.get_ticks_usec()
+
+
+func _rules_name() -> String:
+	return "Rust" if session.state is RustState else "GDScript"
 
 
 func _build_3d() -> void:
@@ -135,7 +140,7 @@ func _process(delta: float) -> void:
 func _draw() -> void:
 	var font := ThemeDB.fallback_font
 	var s := session.state
-	var hud := "%d Hz" % SimConst.TICK_HZ
+	var hud := "%d Hz %s" % [SimConst.TICK_HZ, _rules_name()]
 	if not _offline:
 		hud += "   rtt %d ms   rollbacks %d   resim %d   stalls %d" % [Net.rtt_ms, session.stats.rollbacks,
 				session.stats.resim, session.stats.stalls]

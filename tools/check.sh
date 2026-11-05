@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the headless test suite and reports each result. Exits non-zero on any failure.
-#   tools/check.sh         fast tests, about 2 minutes
+#   tools/check.sh         fast tests, about 3 minutes
 #   tools/check.sh --full  more seeds, CPU players and longer fuzzing
 GODOT="${GODOT:-$(dirname "$0")/../../Godot/Godot_v4.7.2-stable_linux.x86_64}"
 GODOT="$(realpath "$GODOT")"
@@ -73,6 +73,12 @@ if command -v cargo > /dev/null; then
 		[ -f .godot/extension_list.cfg ] || "$GODOT" --headless --path . --import > /dev/null 2>&1
 		rm -f "$log"
 		run test_rust_bridge
+		run test_backends
+		# The network failures again, with Rust on both sides and a Rust player against GDScript.
+		if [ $full -eq 1 ]; then
+			run test_net_matrix --seeds=4 --backends=rust
+			run test_net_matrix --seeds=4 --backends=mixed
+		fi
 	else
 		echo "FAIL Rust extension build"
 		tail -n 30 "$log"
