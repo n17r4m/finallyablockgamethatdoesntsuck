@@ -4,7 +4,7 @@ extends SceneTree
 
 const W := SimConst.W
 const ROWS := SimConst.ROWS
-const EXPECTED_CHECKS := 17
+const EXPECTED_CHECKS := 18
 const LONG := SimConst.TICK_HZ * 8 # long enough for any scenario here to play out
 const CRACK_LONG := LONG * 3 # cracks run in bullet time
 
@@ -27,6 +27,7 @@ func _init() -> void:
 	_test_story_chain_off_cracked_garbage()
 	_test_crack_ripples_from_impact()
 	_test_bullet_time()
+	_test_zero_delay_acts_on_the_same_tick()
 	_failed += EXPECTED_CHECKS - _ran
 	print("PASS" if _failed == 0 else "FAIL (%d)" % _failed)
 	quit(0 if _failed == 0 else 1)
@@ -295,3 +296,14 @@ func _test_bullet_time() -> void:
 	_check(slowed and swap_done and crack_advanced < SimConst.SWAP_TICKS * 0.5 and b.time_rate == SimConst.TIME_UNIT,
 			"bullet time: swap takes %d ticks while the crack advances %d; clock back to normal after" % [
 			SimConst.SWAP_TICKS, crack_advanced])
+
+
+func _test_zero_delay_acts_on_the_same_tick() -> void:
+	var none := RollbackSession.new(1, 0, 0, true, true)
+	var some := RollbackSession.new(1, 0, SimConst.TICKS_PER_FRAME, true, true)
+	var x := none.state.boards[0].cursor_x
+	for s: RollbackSession in [none, some]:
+		s.set_local_input(SimConst.LEFT)
+		s.advance(1)
+	_check(none.state.boards[0].cursor_x == x - 1 and some.state.boards[0].cursor_x == x,
+			"zero input delay moves the cursor on the tick it's pressed; a delay doesn't")

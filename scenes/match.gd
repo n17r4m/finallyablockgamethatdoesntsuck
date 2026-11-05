@@ -18,7 +18,8 @@ var _pilot: CpuPlayer # demo mode: a CPU on your board too
 
 func _ready() -> void:
 	_offline = Net.remote_id == 0
-	var delay: int = Config.get_value("net", "input_delay_frames") * SimConst.TICKS_PER_FRAME
+	# Input delay only hides network lag from rollback, so offline play has none.
+	var delay: int = 0 if _offline else Config.get_value("net", "input_delay_frames") * SimConst.TICKS_PER_FRAME
 	var solo := _offline and Net.cpu_name == ""
 	session = RollbackSession.new(Net.match_seed, Net.local_idx, delay, _offline, solo)
 	if _offline and not solo:
@@ -26,7 +27,7 @@ func _ready() -> void:
 		if Net.demo:
 			_pilot = CpuPlayer.opponent("Overmind", Net.cpu_level, Net.match_seed + 1)
 	session.desynced.connect(_on_desynced)
-	print("match start seed=%d idx=%d %s" % [Net.match_seed, Net.local_idx, "offline" if _offline else "online"])
+	print("match start seed=%d idx=%d %s delay=%d" % [Net.match_seed, Net.local_idx, "offline" if _offline else "online", delay])
 	if not _offline:
 		session.outgoing.connect(Net.send)
 		Net.packet.connect(session.receive)
