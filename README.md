@@ -32,6 +32,7 @@ Panel-de-Pon-style 1v1 versus, Godot 4.7, GDScript, rollback netcode. The game p
   time sync keeps rollbacks even by slowing whichever side runs further ahead of the other's inputs.
 - `sim/replay.gd` — a whole game as data: seed, setup, inputs and state hashes. Verifies by re-simulating.
 - `rust/sim/` — the same rules in Rust, for the server and for faster clients. `board.rs` follows `sim_board.gd` function by function.
+- `rust/server/`, `net/server_link.gd` — the match server and the game's end of it: pairs players, relays inputs, referees on the real rules. See [docs/server-protocol.md](docs/server-protocol.md).
 - `rust/godot/`, `ext/` — the Godot extension that exposes those rules as `RustSim`, which `sim/rust_state.gd` wraps for the game. `[sim] backend` in settings is `auto` or `gdscript`. Build it with `tools/build_rust_ext.sh`; see [docs/platforms.md](docs/platforms.md).
 - `ai/cpu_player.gd` — CPU opponents: stochastic plan search on a settled-board model; personalities × levels.
 - `view/board_view.gd` — **the 2D→3D cut-off** (below).

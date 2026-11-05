@@ -45,7 +45,8 @@ Feature list below is from memory of Crack Attack; correct it where it's wrong.
 - Demo/attract mode exists (`--demo`); use it for trailers and the title screen.
 - Rollback netcode with desync detection and time sync (done), spectators, replay playback (matches already record and verify).
 - The game plays on the Rust rules (`rust/sim`) on desktop, Android and web, falling back to GDScript ([docs/platforms.md](docs/platforms.md)). Next: iOS, Windows and macOS builds, then use them for a server referee.
-- Matchmaking + ranking (droplix plans: signaling server, Elo).
+- A match server pairs players by queue or room code and referees on the Rust rules ([docs/server-protocol.md](docs/server-protocol.md)). Next: an online button on the title screen, UDP for native clients, and enforcing input lateness.
+- Accounts and ranking (droplix plans: Elo).
 - Web, mobile and console builds from one codebase.
 - Touch controls (drag to swap).
 - Puzzle mode (the sim already supports hand-placed boards via `SimBoard.put`).

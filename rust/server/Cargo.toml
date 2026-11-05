@@ -1,0 +1,13 @@
+[package]
+name = "fbg-server"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Pairs players, relays their inputs and referees their matches with the real rules"
+
+[dependencies]
+fbg-sim = { path = "../sim" }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+getrandom = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }

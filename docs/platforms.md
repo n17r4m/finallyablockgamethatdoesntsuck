@@ -57,6 +57,10 @@ with the worst frame at 121 µs and 816 µs.
 `tools/build_rust_ext.sh linux | android | web` writes to `ext/bin/`, which isn't committed.
 Without a library the game and its tests still run, and only `test_rust_bridge` fails.
 
+The first `--import` of a fresh checkout that already has a library crashes with a core dump as
+it exits. The import itself has finished by then, and later runs are fine. The fault is in
+Godot's shutdown, with no Rust on the stack. Why it happens hasn't been tracked down.
+
 - **Android** needs `rustup target add aarch64-linux-android x86_64-linux-android` and an NDK
   under `ANDROID_HOME`.
 - **Web** needs a nightly toolchain with `rust-src` and `wasm32-unknown-emscripten`, `emcc` on

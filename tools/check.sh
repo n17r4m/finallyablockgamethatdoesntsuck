@@ -68,6 +68,24 @@ if command -v cargo > /dev/null; then
 		failed=1
 	fi
 	rm -f "$log"
+	# Real sessions through a real match server, over real sockets, in real time.
+	if cargo build --quiet --release --manifest-path rust/Cargo.toml -p fbg-server > "$log" 2>&1; then
+		rust/target/release/fbg-server --listen 127.0.0.1:47199 > /dev/null 2>&1 &
+		server=$!
+		sleep 1
+		[ -f .godot/extension_list.cfg ] || "$GODOT" --headless --path . --import > /dev/null 2>&1
+		rm -f "$log"
+		run test_server --url=ws://127.0.0.1:47199 --seconds=20
+		[ $full -eq 1 ] && run test_server --url=ws://127.0.0.1:47199 --seconds=60 --bad-link
+		kill "$server" 2> /dev/null
+		wait "$server" 2> /dev/null
+	else
+		echo "FAIL server build"
+		tail -n 30 "$log"
+		failed=1
+		rm -f "$log"
+	fi
+	log="$(mktemp)"
 	# The same rules through the Godot extension, as a player's build would run them.
 	if tools/build_rust_ext.sh linux > "$log" 2>&1; then
 		[ -f .godot/extension_list.cfg ] || "$GODOT" --headless --path . --import > /dev/null 2>&1

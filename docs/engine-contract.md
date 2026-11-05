@@ -170,5 +170,5 @@ Neither board can see the other's step, so player order doesn't affect the resul
 ## What isn't in the contract
 
 - Rendering, audio and input devices. They read the state and never write to it.
-- The network packet format, which will change when the server arrives.
+- The network packet format, which is in `docs/server-protocol.md`.
 - Which player's machine ran what, and when. `RollbackSession` timing never affects the state.
