@@ -1,0 +1,14 @@
+[configuration]
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = 4.5
+reloadable = false
+
+[libraries]
+linux.debug.x86_64 = "res://ext/bin/libfbg_godot.linux.x86_64.so"
+linux.release.x86_64 = "res://ext/bin/libfbg_godot.linux.x86_64.so"
+android.debug.arm64 = "res://ext/bin/libfbg_godot.android.arm64.so"
+android.release.arm64 = "res://ext/bin/libfbg_godot.android.arm64.so"
+android.debug.x86_64 = "res://ext/bin/libfbg_godot.android.x86_64.so"
+android.release.x86_64 = "res://ext/bin/libfbg_godot.android.x86_64.so"
+web.debug.wasm32 = "res://ext/bin/fbg_godot.web.nothreads.wasm"
+web.release.wasm32 = "res://ext/bin/fbg_godot.web.nothreads.wasm"

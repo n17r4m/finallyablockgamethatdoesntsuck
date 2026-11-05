@@ -4,3 +4,4 @@
 export_credentials.cfg
 /data/
 /rust/target/
+/ext/bin/

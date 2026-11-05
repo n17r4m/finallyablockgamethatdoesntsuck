@@ -68,6 +68,17 @@ if command -v cargo > /dev/null; then
 		failed=1
 	fi
 	rm -f "$log"
+	# The same rules through the Godot extension, as a player's build would run them.
+	if tools/build_rust_ext.sh linux > "$log" 2>&1; then
+		[ -f .godot/extension_list.cfg ] || "$GODOT" --headless --path . --import > /dev/null 2>&1
+		rm -f "$log"
+		run test_rust_bridge
+	else
+		echo "FAIL Rust extension build"
+		tail -n 30 "$log"
+		failed=1
+		rm -f "$log"
+	fi
 else
 	echo "SKIP Rust checks: no cargo"
 fi

@@ -1,5 +1,7 @@
 [workspace]
-members = ["sim"]
+members = ["sim", "godot"]
+# Plain `cargo test` stays about the rules, and doesn't need the Godot bindings.
+default-members = ["sim"]
 resolver = "2"
 
 [profile.release]

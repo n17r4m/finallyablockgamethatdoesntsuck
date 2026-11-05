@@ -1,0 +1,27 @@
+[package]
+name = "fbg-godot"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Lets Godot run fbg-sim, the Rust copy of the block game's rules"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+fbg-sim = { path = "../sim" }
+
+# Only the minimal bindings, since this class needs little of Godot and web builds pay for
+# size. 4.5 is the newest API this version knows; extensions load on newer engines.
+[target.'cfg(not(any(target_os = "android", target_family = "wasm")))'.dependencies]
+godot = { version = "0.4.5", default-features = false, features = ["api-4-5"] }
+
+# Android starts extensions on one thread and runs the game on another, which the bindings'
+# default single-threaded mode panics on. Nothing here uses threads itself.
+[target.'cfg(target_os = "android")'.dependencies]
+godot = { version = "0.4.5", default-features = false, features = ["api-4-5", "experimental-threads"] }
+
+# The prebuilt bindings assume a 64-bit machine, so web generates its own from GODOT4_BIN.
+# Web builds on nightly anyway, so it can use the newest bindings, the first that read 4.7.
+[target.'cfg(target_family = "wasm")'.dependencies]
+godot = { version = "0.5.5", default-features = false, features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }

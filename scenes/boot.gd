@@ -4,6 +4,9 @@ extends Node
 
 
 func _ready() -> void:
+	if OS.has_feature("engine_probe"):
+		add_child(EngineProbe.new())
+		return
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--"):
 			var kv := arg.substr(2).split("=", true, 1)
