@@ -41,6 +41,36 @@ if command -v python3 > /dev/null; then
 		failed=1
 	fi
 fi
+if command -v cargo > /dev/null; then
+	log="$(mktemp)"
+	start=$SECONDS
+	if cargo test --quiet --manifest-path rust/Cargo.toml > "$log" 2>&1; then
+		echo "PASS cargo test ($((SECONDS - start))s)"
+	else
+		echo "FAIL cargo test"
+		tail -n 30 "$log"
+		failed=1
+	fi
+	# Fresh games the corpus never saw: Godot plays them, Rust must agree. --full picks new
+	# ones every run. A failing game's replay is kept, since it reproduces the difference.
+	games=20
+	seed=1
+	[ $full -eq 1 ] && games=100 && seed=$((RANDOM * 1000 + 1))
+	start=$SECONDS
+	dir="$(mktemp -d)"
+	if "$GODOT" --headless --path . -s tools/make_random_games.gd -- --dir="$dir" --games=$games --seed=$seed --seconds=30 > "$log" 2>&1 \
+			&& cargo run --quiet --release --manifest-path rust/Cargo.toml --bin replay_verify -- "$dir" > "$log" 2>&1; then
+		echo "PASS Rust matches Godot on $games random games ($((SECONDS - start))s)"
+		rm -rf "${dir:?}"
+	else
+		echo "FAIL Rust and Godot differ, seed $seed, replays kept in $dir"
+		grep -v '^ok' "$log" | tail -n 20
+		failed=1
+	fi
+	rm -f "$log"
+else
+	echo "SKIP Rust checks: no cargo"
+fi
 if [ $full -eq 1 ]; then
 	run test_net_matrix --seeds=8 --cpu=2
 	run test_sim_fuzz --minutes=10

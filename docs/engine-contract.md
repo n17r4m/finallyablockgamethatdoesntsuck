@@ -7,8 +7,10 @@ The rule of the contract: **given a seed, a setup and a list of inputs, every im
 produces the same state, byte for byte, on every tick.**
 
 - **The rules** are defined by `sim/sim_board.gd` and `sim/sim_state.gd`, and locked by the
-  recorded games in `tests/golden/`.
+  recorded games in `tests/golden/`. When GDScript and Rust disagree, GDScript is right for now.
 - **`tools/replay_check.py`** reads the formats below using only this document, without Godot.
+- **`rust/sim`** is a second implementation of the rules, held to the same recorded games, plus
+  fresh random ones from `tools/make_random_games.gd`.
 
 ## Versions
 
@@ -24,7 +26,7 @@ A replay only verifies on a build with the same rules version and tick rate.
 
 `tests/test_golden.gd` fails on any change to what a game does, which is its job.
 
-1. Make the change and bump `RULES_VERSION`.
+1. Make the change in `sim/` and in `rust/sim/`, and bump `RULES_VERSION` in both.
 2. Run `godot --headless --path . -s tools/make_golden.gd`.
 3. Run `tools/check.sh`, and say in the commit that the rules changed.
 
@@ -109,15 +111,19 @@ the place to start debugging a serializer, since they don't need a working sim.
 | checkpoints | count, then entries | At least one |
 | trailer | 8 bytes | First 8 bytes of the SHA-256 of everything before it |
 
-**Varint:** unsigned LEB128, at most 62 bits, with no redundant trailing zero byte.
+**Varint:** unsigned LEB128, at most 8 bytes (56 bits), with no redundant trailing zero byte.
+
+**Counts:** a count larger than the bytes left in the file is refused, before anything is read.
 
 **Setup op:** op u8, board u8, then its arguments, one u8 each:
 
 | Op | Name | Arguments | Meaning |
 |---|---|---|---|
 | 0 | clear | none | `clear_all()` |
-| 1 | put | x, row, colour | `put()`: row 0 is the bottom visible row, colour is 0 to 5 |
-| 2 | garbage | width, height | `receive_garbage()` with one slab |
+| 1 | put | x, row, colour | `put()`: x is 0 to 5, row is 0 to 23 with 0 the bottom visible row, colour is 0 to 5 |
+| 2 | garbage | width, height | `receive_garbage()` with one slab: width is 1 to 6, height is 1 to 12 |
+
+Anything else, including a board other than 0 or 1, is refused.
 
 Real matches have no setup. It exists for hand-built boards and, later, puzzle mode.
 
@@ -130,7 +136,8 @@ Events can land on any tick, not just frame boundaries, so finer input timestamp
 a format change.
 
 **Checkpoint:** tick delta varint, then the state hash after stepping to that tick. The first
-delta counts from 0, and every delta is at least 1. The last one must be the end tick.
+delta counts from 0, and every delta is at least 1. None may pass the end tick, and the last
+one must be on it.
 
 The trailer catches damage, not forgery, because anyone can recompute it. What stops a forged
 game is re-simulating it.

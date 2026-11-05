@@ -317,6 +317,9 @@ func _read_checks() -> void:
 			error = "checkpoints must ascend"
 			return
 		prev += delta
+		if prev > end_tick:
+			error = "checkpoint past the end"
+			return
 		check_ticks.append(prev)
 		check_hashes.append(_b.decode_s64(_p))
 		_p += 8
@@ -335,7 +338,7 @@ func _count() -> int:
 	return n
 
 
-## An unsigned LEB128 varint of at most 62 bits.
+## An unsigned LEB128 varint of at most 8 bytes, so 56 bits.
 func _var() -> int:
 	var v := 0
 	var shift := 0

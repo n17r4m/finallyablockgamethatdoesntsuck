@@ -44,6 +44,7 @@ Feature list below is from memory of Crack Attack; correct it where it's wrong.
   a second; `tools/league_report.py` gives Wilson CIs + ratings. Feeds step 2 above.
 - Demo/attract mode exists (`--demo`); use it for trailers and the title screen.
 - Rollback netcode with desync detection and time sync (done), spectators, replay playback (matches already record and verify).
+- Rust rules (`rust/sim`) match GDScript on every recorded game. Next: try them in Godot on web and mobile, then use them for a server referee.
 - Matchmaking + ranking (droplix plans: signaling server, Elo).
 - Web, mobile and console builds from one codebase.
 - Touch controls (drag to swap).

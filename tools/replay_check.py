@@ -90,6 +90,8 @@ def parse(raw):
         if delta < 1:
             raise ValueError("checkpoints must ascend")
         tick += delta
+        if tick > out["end_tick"]:
+            raise ValueError("checkpoint past the end")
         checks.append((tick, r.take(8)))
     out["checkpoints"] = checks
     if not checks or tick != out["end_tick"]:

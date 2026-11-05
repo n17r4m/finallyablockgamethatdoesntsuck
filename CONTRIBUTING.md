@@ -24,7 +24,7 @@ unlicensed contribution would block platform releases.
   this repo. It lives in a private porting repository. Don't submit PRs containing NDA material.
 
 ### 3. Code is GPL; assets and name are not
-- **Code** (`.gd`, `.tscn`, `.godot`, tooling, tests): GPLv3.
+- **Code** (`.gd`, `.rs`, `.tscn`, `.godot`, tooling, tests): GPLv3.
 - **Assets** (art, audio, music, fonts we commission, and anything under `assets/`):
   **all rights reserved** unless a file or `assets/LICENSE` says otherwise. Forks may use
   the code but must supply their own assets.
@@ -41,8 +41,8 @@ work under a license compatible with the above is accepted.
 ## Practicalities
 - Run `tools/check.sh` and make sure every test passes
   before opening a PR touching `sim/`.
-- Everything that affects gameplay goes in `sim/`: integer-only, no nodes, no engine RNG. Changing what a
-  game does means following "Changing a rule on purpose" in `docs/engine-contract.md`.
+- Everything that affects gameplay goes in `sim/`, and in its Rust twin `rust/sim/`: integer-only, no
+  nodes, no engine RNG. Changing what a game does means following "Changing a rule on purpose" in `docs/engine-contract.md`.
 - Short imperative commit messages (`Add garbage blocks`, `Fix cursor wrap`).
 
 *This document describes project policy, not legal advice.*

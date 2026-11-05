@@ -5,7 +5,8 @@ extends RefCounted
 ## Every cell runs a small state machine (swap / hover / fall / land / matched)
 ## driven by tick timers. Nothing here is spatial beyond grid indices: sliding,
 ## falling, swap depth and pops are derived from these timers by BoardView.
-## Steps 1080x/s and is re-simulated during rollback, so keep it lean.
+## Steps 720x/s and is re-simulated during rollback, so keep it lean. rust/sim/src/board.rs
+## follows this file function by function: change one, change the other.
 
 const W := SimConst.W
 const ROWS := SimConst.ROWS

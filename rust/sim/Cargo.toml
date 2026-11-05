@@ -1,0 +1,9 @@
+[package]
+name = "fbg-sim"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "The block game's deterministic rules, held to docs/engine-contract.md"
+
+[dependencies]
+sha2 = "0.11"

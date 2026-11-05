@@ -221,6 +221,12 @@ func _test_forgery() -> void:
 	r.check_hashes[-1] ^= 1
 	if Replay.decode(r.encode()).verify() == "":
 		_fail("a replay with a rigged checkpoint verified")
+	# A checkpoint past the end.
+	r = Replay.decode(bytes)
+	r.check_ticks.append(r.end_tick + 1)
+	r.check_hashes.append(0)
+	if Replay.decode(r.encode()).error != "checkpoint past the end":
+		_fail("a replay with a checkpoint past the end decoded")
 	# A rigged start state.
 	r = Replay.decode(bytes)
 	r.game_seed ^= 2

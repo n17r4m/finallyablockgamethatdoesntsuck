@@ -5,7 +5,7 @@ class_name SimConst
 ## steady number of ticks per frame. Any other rate still works, off the wall clock.
 
 ## Bump whenever a rule or timing changes what a game does: old replays stop verifying,
-## and tools/make_golden.gd must be rerun. See docs/engine-contract.md.
+## tools/make_golden.gd must be rerun, and rust/sim must change too. See docs/engine-contract.md.
 const RULES_VERSION := 1
 const TICK_HZ := 720
 const TICKS_PER_FRAME := 12 # at 60 fps

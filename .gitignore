@@ -3,3 +3,4 @@
 *.tmp
 export_credentials.cfg
 /data/
+/rust/target/

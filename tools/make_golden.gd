@@ -156,13 +156,18 @@ func _garbage() -> void:
 	_crack("garbage_linked", [[3, 1], [3, 1]], 390)
 	# One on top of another.
 	_crack("garbage_stacked", [[6, 1], [6, 2]], 391)
+	# One matched panel touches a slab above it and another beside it, so the order it looks
+	# around in decides which slab rolls its colours first.
+	_crack("garbage_two_sided", [[3, 1], [3, 1]], 392, [[1, 2, 1, 3, 4, 3], [3, 4, 1, 4, 3, 4], [4, 1, 2]], 2)
 
 
-func _crack(name: String, slabs: Array, game_seed: int) -> void:
+## The default floor: swapping columns 2 and 3 makes 1 1 1. A floor with swap_row set swaps
+## columns 1 and 2 of that row instead.
+func _crack(name: String, slabs: Array, game_seed: int, floor_rows := [[1, 1, 2, 1, 3, 4]], swap_row := 0) -> void:
 	var ops := _clear_both()
-	var floor_row := [1, 1, 2, 1, 3, 4] # swapping columns 2 and 3 makes 1 1 1
-	for x in 6:
-		_put(ops, x, 0, floor_row[x])
+	for row in floor_rows.size():
+		for x in floor_rows[row].size():
+			_put(ops, x, row, floor_rows[row][x])
 	for s: Array in slabs:
 		ops.append([Replay.OP_GARBAGE, 0, s[0], s[1]])
 	var rec := Rec.new(game_seed, ops)
@@ -173,8 +178,9 @@ func _crack(name: String, slabs: Array, game_seed: int) -> void:
 		rec.run(TPF)
 		waited += TPF
 	_check(b.next_gid - 1 == slabs.size(), "%s: only %d slabs landed" % [name, b.next_gid - 1])
-	rec.run(TPF, SimConst.target(2, BOTTOM) | SimConst.SWAP)
-	rec.run(TPF, SimConst.target(2, BOTTOM))
+	var cursor := SimConst.target(1 if swap_row > 0 else 2, BOTTOM - swap_row)
+	rec.run(TPF, cursor | SimConst.SWAP)
+	rec.run(TPF, cursor)
 	var cracked := false
 	var bullet := false
 	var at := 0
@@ -335,15 +341,22 @@ func _cpu_games() -> void:
 	var n := 0
 	for g: Array in games:
 		n += 1
-		var rec := Rec.new(700 + n)
-		var c0 := CpuPlayer.opponent(g[0], g[1], 700 + n)
-		var c1 := CpuPlayer.opponent(g[2], g[3], 800 + n)
-		while rec.state.winner == -1 and rec.state.tick < HZ * 240:
-			var i0 := c0.next_input(rec.state.boards[0])
-			var i1 := c1.next_input(rec.state.boards[1])
-			rec.run(TPF, i0, i1)
-		rec.run(HZ)
-		_save("cpu_%d" % n, rec.to_replay())
+		_cpu_game("cpu_%d" % n, g, 700 + n, 700 + n, 800 + n)
+	# Chosen by search: a matched panel with a slab directly above and another directly below,
+	# which is too hard to build by hand. It locks the order a panel looks around in.
+	_cpu_game("cpu_slabs_above_and_below", ["Overmind", "hard", "Architect", "hard"], 1275, 1275, 1276)
+
+
+func _cpu_game(name: String, g: Array, game_seed: int, seed0: int, seed1: int) -> void:
+	var rec := Rec.new(game_seed)
+	var c0 := CpuPlayer.opponent(g[0], g[1], seed0)
+	var c1 := CpuPlayer.opponent(g[2], g[3], seed1)
+	while rec.state.winner == -1 and rec.state.tick < HZ * 240:
+		var i0 := c0.next_input(rec.state.boards[0])
+		var i1 := c1.next_input(rec.state.boards[1])
+		rec.run(TPF, i0, i1)
+	rec.run(HZ)
+	_save(name, rec.to_replay())
 
 
 # --- hash test vectors ----------------------------------------------------------------

@@ -1,6 +1,6 @@
 # Finally A Block Game That Doesn't Suck
 
-Panel-de-Pon-style 1v1 versus, Godot 4.7, pure GDScript, rollback netcode.
+Panel-de-Pon-style 1v1 versus, Godot 4.7, GDScript, rollback netcode. The game itself is still all GDScript; a Rust copy of the rules runs alongside it, held to the same recorded games, and doesn't run in the game yet.
 
 ## Run
 - Editor: open `project.godot` with `../Godot/Godot_v4.7.2-stable_linux.x86_64`.
@@ -16,7 +16,9 @@ Panel-de-Pon-style 1v1 versus, Godot 4.7, pure GDScript, rollback netcode.
   `test_sim` (game rules), `test_touch` (touch controls), `test_golden` (recorded games still play out exactly), `test_netcode` (lossy-link rollback soak), `test_net_matrix` (freezes, spikes, blackouts,
   lopsided routes and fairness), `test_sim_fuzz` (board invariants, snapshots, P1/P2 mirror), `test_cpu` (CPU sanity, slow).
 - Replays: every real match saves to `user://replays` (`[replay] save` and `keep` in settings). Inspect one with `python3 tools/replay_check.py FILE`, or re-simulate it with `godot --headless --path . -s tools/replay_verify.gd -- FILE`.
+- Rust rules (needs `cargo`, which `tools/check.sh` skips if missing): `cd rust && cargo test`. Verify replays with `cargo run --release --bin replay_verify -- FILE_OR_DIR`, or time the rules with `cargo run --release --bin bench_sim -- ../tests/golden/cpu_1.fbgr`.
 - Changed a rule on purpose? See [docs/engine-contract.md](docs/engine-contract.md), which also specifies the state hash and replay format.
+- Fresh random games for testing another implementation: `godot --headless --path . -s tools/make_random_games.gd -- --dir=DIR --games=N`.
 - Sim cost on busy boards: `godot --headless --path . -s tools/bench_sim.gd`, on an idle machine.
 - CPU league (logs to `data/`, gitignored): `nice -n 19 godot --headless --path . -s tools/league.gd --
   --agents=beam/balanced/hard,flatmc/chainer/hard,Architect:max --games=10 --out=data/run1 [--positions]`,
@@ -29,6 +31,7 @@ Panel-de-Pon-style 1v1 versus, Godot 4.7, pure GDScript, rollback netcode.
 - `sim/rollback_session.gd` — input delay + rollback; inputs are (tick, mask) change events; checksums exchanged each second;
   time sync keeps rollbacks even by slowing whichever side runs further ahead of the other's inputs.
 - `sim/replay.gd` — a whole game as data: seed, setup, inputs and state hashes. Verifies by re-simulating.
+- `rust/sim/` — the same rules in Rust, for the server and for faster clients. `board.rs` follows `sim_board.gd` function by function. Not used by the game yet.
 - `ai/cpu_player.gd` — CPU opponents: stochastic plan search on a settled-board model; personalities × levels.
 - `view/board_view.gd` — **the 2D→3D cut-off** (below).
 - `render/` — renderers that read only BoardView. `board_renderer_2d.gd` is placeholder art.
