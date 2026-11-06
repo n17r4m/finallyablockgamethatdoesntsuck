@@ -79,6 +79,11 @@ static func cursor(b: SimBoard) -> Vector3:
 	return Vector3(b.cursor_x, b.cursor_y - SimConst.BUF - lift(b), 0.0)
 
 
+## Where a cell of the visible board is drawn right now, in the same space as cursor().
+static func cell(b: SimBoard, at: Vector2i) -> Vector3:
+	return Vector3(at.x, at.y - lift(b), 0.0)
+
+
 ## Incoming garbage as [w, h] pairs, head first.
 static func incoming(b: SimBoard) -> Array[Vector2i]:
 	var out: Array[Vector2i] = []

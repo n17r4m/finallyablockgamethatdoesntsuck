@@ -20,7 +20,7 @@ func _initialize() -> void:
 	_net = root.get_node("Net")
 	_controls.touch_first = false
 	var keyboard: Node = await _start("", "2d")
-	_check(not keyboard._leave_button.is_visible_in_tree(), "a keyboard player gets no button")
+	_check(keyboard._leave_button.is_visible_in_tree(), "a keyboard or mouse player gets the button too")
 	keyboard.free()
 	_controls.touch_first = true
 	for renderer: String in ["3d", "2d"]:
@@ -173,7 +173,11 @@ func _test_pad_leaves_on_start_not_swap() -> void:
 	_check(_in_match(game), "B swaps, and doesn't leave")
 	await _pad(JOY_BUTTON_START)
 	await _settle()
-	_check(_on_title(), "start leaves")
+	_check(_in_match(game), "start asks first, during play")
+	_check(game._leave_button.text != "Leave", "and says so")
+	await _pad(JOY_BUTTON_START)
+	await _settle()
+	_check(_on_title(), "a second start leaves")
 	await _clear()
 
 

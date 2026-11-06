@@ -319,6 +319,7 @@ func _test_menu_buttons_on_a_pad() -> void:
 
 
 func _test_hint_follows_bindings() -> void:
+	_controls.last_device = "keys"
 	var hint: String = _controls.hint()
 	_check(hint.begins_with("arrows/WASD move · Space/X swap · C/L raise"), "the hint says the defaults: " + hint)
 	_controls.bind("keys", "swap", 0, KEY_J)

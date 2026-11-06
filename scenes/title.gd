@@ -19,6 +19,9 @@ var _offline: VBoxContainer
 var _menu: ScrollContainer
 var _play: Button
 var _settings: Button
+# Whether this platform gets these buttons. Set before it enters the tree, tests stand in for one.
+var can_host: bool = Config.can_host()
+var can_quit: bool = Config.can_quit()
 
 
 func _ready() -> void:
@@ -52,7 +55,8 @@ func _ready() -> void:
 
 	_name = _field(_online, "Name", Config.get_value("player", "name"))
 	_address = _field(_online, "Host address", Config.get_value("net", "address"))
-	_button(_online, "Host", _host)
+	if can_host:
+		_button(_online, "Host", _host)
 	_button(_online, "Join", _join)
 	var row := HBoxContainer.new()
 	_cpu = OptionButton.new()
@@ -85,7 +89,7 @@ func _ready() -> void:
 	box.add_child(bottom)
 	_settings = _button(bottom, "Settings", _open_settings)
 	_settings.size_flags_horizontal = SIZE_EXPAND_FILL
-	if not OS.has_feature("web"):
+	if can_quit:
 		_button(bottom, "Quit", get_tree().quit).size_flags_horizontal = SIZE_EXPAND_FILL
 
 	_status = Label.new()
@@ -118,6 +122,17 @@ func _ready() -> void:
 		var name := parts[0] if parts[0] in CpuPlayer.OPPONENTS else "Overmind"
 		Net.demo = args.has("demo")
 		Net.start_practice(name, parts[1] if parts.size() > 1 and parts[1] in CpuPlayer.LEVELS else "hard")
+
+
+## A keyboard or pad picked up on a touch screen, where nothing started with focus.
+func _unhandled_input(event: InputEvent) -> void:
+	if not _menu.visible or get_viewport().gui_get_focus_owner() != null:
+		return
+	for action: String in ["ui_up", "ui_down", "ui_left", "ui_right", "ui_accept", "ui_focus_next"]:
+		if event.is_action_pressed(action):
+			_play.grab_focus()
+			get_viewport().set_input_as_handled()
+			return
 
 
 func _exit_tree() -> void:

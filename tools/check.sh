@@ -30,6 +30,8 @@ run() {
 
 run test_sim
 run test_touch
+run test_grab
+run test_any_input
 run test_keys
 run test_title
 run test_settings

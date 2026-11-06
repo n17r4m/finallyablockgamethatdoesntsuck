@@ -9,7 +9,7 @@ const DEFAULTS := {
 	"sim": {"backend": "auto"}, # "auto" uses the Rust rules where available, "gdscript" never does
 	"video": {"fullscreen": false, "vsync": true, "max_fps": 0, "renderer": "3d", "show_stats": true},
 	"audio": {"master": 1.0, "music": 1.0, "sfx": 1.0}, # 0..1
-	"controls": {"stick_deadzone": 0.5, "carry_delay_ms": 110},
+	"controls": {"stick_deadzone": 0.5, "carry_delay_ms": 110, "cursor": "swap"},
 }
 ## Audio buses by setting. Sounds play on "Music" or "SFX"; both feed Master.
 const BUSES := {"master": "Master", "music": "Music", "sfx": "SFX"}
@@ -103,3 +103,13 @@ func can_set_vsync() -> bool:
 ## The browser paces the game itself.
 func can_limit_fps() -> bool:
 	return not OS.has_feature("web")
+
+
+## A page can't listen for connections.
+func can_host() -> bool:
+	return not OS.has_feature("web")
+
+
+## A page has a tab to close, and a phone has its own way out.
+func can_quit() -> bool:
+	return not OS.has_feature("web") and not OS.has_feature("mobile")
