@@ -34,6 +34,7 @@ func _initialize() -> void:
 	await _test_opponent_gone_takes_one_tap()
 	await _test_android_back()
 	await _test_tap_on_button_is_not_a_game_tap()
+	await _test_pad_leaves_on_start_not_swap()
 	print("PASS" if _failed == 0 else "FAIL (%d)" % _failed)
 	quit(0 if _failed == 0 else 1)
 
@@ -162,6 +163,29 @@ func _test_tap_on_button_is_not_a_game_tap() -> void:
 	_check(seen.is_empty(), "a tap on the button isn't tap-to-retry")
 	_check(_on_title(), "it leaves")
 	await _clear()
+
+
+## Through Input and the match's own _process. B is a default swap button, and also Godot-style
+## "back" in menus: it must never throw a game away.
+func _test_pad_leaves_on_start_not_swap() -> void:
+	var game: Node = await _start("Overmind")
+	await _pad(JOY_BUTTON_B)
+	_check(_in_match(game), "B swaps, and doesn't leave")
+	await _pad(JOY_BUTTON_START)
+	await _settle()
+	_check(_on_title(), "start leaves")
+	await _clear()
+
+
+func _pad(button: JoyButton) -> void:
+	for pressed: bool in [true, false]:
+		var ev := InputEventJoypadButton.new()
+		ev.button_index = button
+		ev.pressed = pressed
+		ev.device = 1
+		Input.parse_input_event(ev)
+		Input.flush_buffered_events()
+		await process_frame
 
 
 func _touch(at: Vector2, pressed: bool) -> void:

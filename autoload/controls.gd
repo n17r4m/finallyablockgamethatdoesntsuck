@@ -12,18 +12,43 @@ extends Node
 ## Holding the rising row below the stack raises. Everything comes out of
 ## sample() as the same one-int input the sim and netcode already carry.
 
+## The defaults. A pad entry is a button, or Vector2i(axis, direction) for a stick or trigger.
+## Saved bindings use the same values, in the "keys" and "pad" sections of the settings.
 const BINDINGS := {
-	"up": {"bit": SimConst.UP, "keys": [KEY_UP, KEY_W], "pad": [JOY_BUTTON_DPAD_UP]},
-	"down": {"bit": SimConst.DOWN, "keys": [KEY_DOWN, KEY_S], "pad": [JOY_BUTTON_DPAD_DOWN]},
-	"left": {"bit": SimConst.LEFT, "keys": [KEY_LEFT, KEY_A], "pad": [JOY_BUTTON_DPAD_LEFT]},
-	"right": {"bit": SimConst.RIGHT, "keys": [KEY_RIGHT, KEY_D], "pad": [JOY_BUTTON_DPAD_RIGHT]},
-	"swap": {"bit": SimConst.SWAP, "keys": [KEY_SPACE, KEY_X, KEY_K], "pad": [JOY_BUTTON_A, JOY_BUTTON_B]},
-	"raise": {"bit": SimConst.RAISE, "keys": [KEY_C, KEY_L, KEY_SHIFT], "pad": [JOY_BUTTON_RIGHT_SHOULDER, JOY_BUTTON_LEFT_SHOULDER]},
+	"up": {"bit": SimConst.UP, "label": "Up", "keys": [KEY_UP, KEY_W],
+			"pad": [JOY_BUTTON_DPAD_UP, Vector2i(JOY_AXIS_LEFT_Y, -1)]},
+	"down": {"bit": SimConst.DOWN, "label": "Down", "keys": [KEY_DOWN, KEY_S],
+			"pad": [JOY_BUTTON_DPAD_DOWN, Vector2i(JOY_AXIS_LEFT_Y, 1)]},
+	"left": {"bit": SimConst.LEFT, "label": "Left", "keys": [KEY_LEFT, KEY_A],
+			"pad": [JOY_BUTTON_DPAD_LEFT, Vector2i(JOY_AXIS_LEFT_X, -1)]},
+	"right": {"bit": SimConst.RIGHT, "label": "Right", "keys": [KEY_RIGHT, KEY_D],
+			"pad": [JOY_BUTTON_DPAD_RIGHT, Vector2i(JOY_AXIS_LEFT_X, 1)]},
+	"swap": {"bit": SimConst.SWAP, "label": "Swap", "keys": [KEY_SPACE, KEY_X, KEY_K],
+			"pad": [JOY_BUTTON_A, JOY_BUTTON_B]},
+	"raise": {"bit": SimConst.RAISE, "label": "Raise", "keys": [KEY_C, KEY_L, KEY_SHIFT],
+			"pad": [JOY_BUTTON_RIGHT_SHOULDER, JOY_BUTTON_LEFT_SHOULDER]},
 }
+const SLOTS := 3 # bindings an action can have, per device
+const PAD_BUTTONS := {
+	JOY_BUTTON_A: "A", JOY_BUTTON_B: "B", JOY_BUTTON_X: "X", JOY_BUTTON_Y: "Y",
+	JOY_BUTTON_LEFT_SHOULDER: "LB", JOY_BUTTON_RIGHT_SHOULDER: "RB",
+	JOY_BUTTON_LEFT_STICK: "L3", JOY_BUTTON_RIGHT_STICK: "R3",
+	JOY_BUTTON_DPAD_UP: "D-pad Up", JOY_BUTTON_DPAD_DOWN: "D-pad Down",
+	JOY_BUTTON_DPAD_LEFT: "D-pad Left", JOY_BUTTON_DPAD_RIGHT: "D-pad Right",
+}
+const PAD_AXES := {
+	Vector2i(JOY_AXIS_LEFT_X, -1): "LS Left", Vector2i(JOY_AXIS_LEFT_X, 1): "LS Right",
+	Vector2i(JOY_AXIS_LEFT_Y, -1): "LS Up", Vector2i(JOY_AXIS_LEFT_Y, 1): "LS Down",
+	Vector2i(JOY_AXIS_RIGHT_X, -1): "RS Left", Vector2i(JOY_AXIS_RIGHT_X, 1): "RS Right",
+	Vector2i(JOY_AXIS_RIGHT_Y, -1): "RS Up", Vector2i(JOY_AXIS_RIGHT_Y, 1): "RS Down",
+	Vector2i(JOY_AXIS_TRIGGER_LEFT, 1): "LT", Vector2i(JOY_AXIS_TRIGGER_RIGHT, 1): "RT",
+}
+const CAPTURE_AXIS := 0.6 # how far a stick must move to count when binding it
+const TAP_HEIGHT := 48.0 # the usual minimum for a finger
+const POPUP_ROW_GAP := 21 # makes dropdown rows about 44 tall, so all six fit on a landscape phone
 
 # Gesture tuning, in cells and milliseconds.
 const TAP_SLOP := 0.35 # movement under this is wobble, not a gesture
-const HOLD_TO_CARRY_MS := 110 # resting this long before moving picks the block up
 const CARRY_MARGIN := 0.25 # how far past a boundary a carried block must go to swap
 const FLICK_TRIM := 0.2 # fraction of a flick's path ignored at each end
 const FLICK_MIN_DX := 0.5 # shorter horizontal travel than this is a tap
@@ -39,6 +64,8 @@ var touch_first: bool = (JavaScriptBridge.eval("'ontouchstart' in window", true)
 ## left edge, y down from the top visible row; y >= H is the rising row).
 ## Unset (or no local human) means touch is ignored.
 var board_mapper := Callable()
+## Resting this long before moving picks the block up; a setting.
+var carry_delay_ms := 0
 ## Milliseconds; replaceable so tests can drive time.
 var clock := func() -> int: return Time.get_ticks_msec()
 
@@ -57,18 +84,175 @@ var _sent := 0 # the last sample
 
 
 func _ready() -> void:
-	for action: String in BINDINGS:
-		if InputMap.has_action(action):
-			continue
+	carry_delay_ms = Config.get_value("controls", "carry_delay_ms")
+	apply_bindings()
+	# Not rebindable, so a player can always get out of a match and a menu.
+	_add_fixed("leave", KEY_ESCAPE, JOY_BUTTON_START)
+	# Godot's menu actions have no pad buttons. The match doesn't read these, so B can also swap.
+	_add_fixed("ui_accept", null, JOY_BUTTON_A)
+	_add_fixed("ui_cancel", null, JOY_BUTTON_B)
+
+
+func _add_fixed(action: String, key: Variant, button: int) -> void:
+	if not InputMap.has_action(action):
 		InputMap.add_action(action)
-		for k: Key in BINDINGS[action].keys:
-			var ev := InputEventKey.new()
-			ev.physical_keycode = k
-			InputMap.action_add_event(action, ev)
-		for b: JoyButton in BINDINGS[action].pad:
-			var ev := InputEventJoypadButton.new()
-			ev.button_index = b
-			InputMap.action_add_event(action, ev)
+	if key != null:
+		InputMap.action_add_event(action, _key_event(key))
+	InputMap.action_add_event(action, _pad_event(button))
+
+
+## Puts the saved bindings into InputMap.
+func apply_bindings() -> void:
+	for action: String in BINDINGS:
+		if not InputMap.has_action(action):
+			InputMap.add_action(action)
+		InputMap.action_erase_events(action)
+		InputMap.action_set_deadzone(action, Config.get_value("controls", "stick_deadzone"))
+		for code: int in bindings("keys", action):
+			InputMap.action_add_event(action, _key_event(code))
+		for code: Variant in bindings("pad", action):
+			InputMap.action_add_event(action, _pad_event(code))
+
+
+func _key_event(code: int) -> InputEventKey:
+	var ev := InputEventKey.new()
+	ev.physical_keycode = code as Key
+	return ev
+
+
+## On every pad: a phone's first device can be something other than the controller.
+func _pad_event(code: Variant) -> InputEvent:
+	var ev: InputEvent
+	if code is Vector2i:
+		ev = InputEventJoypadMotion.new()
+		ev.axis = code.x
+		ev.axis_value = code.y
+	else:
+		ev = InputEventJoypadButton.new()
+		ev.button_index = code
+	ev.device = -1
+	return ev
+
+
+## device is "keys" or "pad".
+func bindings(device: String, action: String) -> Array:
+	return Config.get_or(device, action, BINDINGS[action][device])
+
+
+## Binds a key or button in a slot, or after the last binding if the slot is empty. Something
+## that does two jobs is never what a player wants, so it leaves any other action it was on.
+func bind(device: String, action: String, slot: int, code: Variant) -> void:
+	var list := bindings(device, action).duplicate()
+	if code in list:
+		return
+	for other: String in BINDINGS:
+		if code in bindings(device, other):
+			var theirs := bindings(device, other).duplicate()
+			theirs.erase(code)
+			Config.set_value(device, other, theirs)
+	if slot < list.size():
+		list[slot] = code
+	else:
+		list.append(code)
+	Config.set_value(device, action, list)
+	apply_bindings()
+
+
+func unbind(device: String, action: String, slot: int) -> void:
+	var list := bindings(device, action).duplicate()
+	if slot < list.size():
+		list.remove_at(slot)
+		Config.set_value(device, action, list)
+		apply_bindings()
+
+
+func reset_bindings(device: String) -> void:
+	Config.erase_section(device)
+	apply_bindings()
+
+
+## What a key or pad event would be bound as, or null if it can't be.
+func binding_code(event: InputEvent, device: String) -> Variant:
+	if device == "keys" and event is InputEventKey and event.pressed and not event.echo:
+		return event.physical_keycode if event.physical_keycode != KEY_NONE else event.keycode
+	if device == "pad" and event is InputEventJoypadButton and event.pressed:
+		return event.button_index if event.button_index in PAD_BUTTONS else null
+	if device == "pad" and event is InputEventJoypadMotion and absf(event.axis_value) >= CAPTURE_AXIS:
+		var code := Vector2i(event.axis, signf(event.axis_value))
+		return code if code in PAD_AXES else null
+	return null
+
+
+func binding_name(device: String, code: Variant) -> String:
+	if device == "pad":
+		return PAD_AXES.get(code, "?") if code is Vector2i else PAD_BUTTONS.get(code, "?")
+	# What's printed on this player's key: the top row's first letter is A on a French keyboard.
+	var knows_layout := DisplayServer.get_name() != "headless" and (OS.has_feature("linuxbsd")
+			or OS.has_feature("windows") or OS.has_feature("macos"))
+	return OS.get_keycode_string(DisplayServer.keyboard_get_keycode_from_physical(code) if knows_layout else code)
+
+
+## A gamepad is plugged in, so that's what the hints should talk about.
+func has_pad() -> bool:
+	return not Input.get_connected_joypads().is_empty()
+
+
+## There are keys or buttons to move a menu's focus with. Focus on a phone only gets in the way.
+func navigates_by_focus() -> bool:
+	return not touch_first or has_pad()
+
+
+func leave_name() -> String:
+	return "start" if has_pad() else "esc"
+
+
+## The match's one line of how to play, from the current bindings.
+func hint() -> String:
+	var device := "pad" if has_pad() else "keys"
+	var moves := PackedStringArray()
+	for slot in SLOTS:
+		var name := _moves_name(device, slot)
+		if name != "":
+			moves.append(name)
+	var parts := PackedStringArray()
+	if not moves.is_empty():
+		parts.append("%s move" % "/".join(moves))
+	for action: String in ["swap", "raise"]:
+		var names := PackedStringArray()
+		for code: Variant in bindings(device, action).slice(0, 2):
+			names.append(binding_name(device, code))
+		if not names.is_empty():
+			parts.append("%s %s" % ["/".join(names), action])
+	if device == "keys":
+		parts.append("or drag blocks")
+	parts.append("%s leave" % leave_name())
+	return " · ".join(parts)
+
+
+## Up, left, down and right of one slot, as one word when they make one: arrows, WASD, stick.
+func _moves_name(device: String, slot: int) -> String:
+	var names := PackedStringArray()
+	for action: String in ["up", "left", "down", "right"]:
+		var list := bindings(device, action)
+		if slot >= list.size():
+			return ""
+		names.append(binding_name(device, list[slot]))
+	if names == PackedStringArray(["Up", "Left", "Down", "Right"]):
+		return "arrows"
+	for prefix: String in ["D-pad", "LS"]:
+		if Array(names).all(func(n: String) -> bool: return n.begins_with(prefix + " ")):
+			return "stick" if prefix == "LS" else prefix
+	if Array(names).all(func(n: String) -> bool: return n.length() == 1):
+		return "".join(names)
+	return "/".join(names)
+
+
+## Makes a control big enough for a finger, on touch screens.
+func size_for_fingers(control: Control) -> void:
+	if touch_first:
+		control.custom_minimum_size.y = TAP_HEIGHT
+		if control is OptionButton:
+			control.get_popup().add_theme_constant_override("v_separation", POPUP_ROW_GAP)
 
 
 ## How many project units make one density-independent pixel (1/160 inch, a CSS pixel on the
@@ -126,7 +310,7 @@ func _move(p: Vector2) -> void:
 	match _mode:
 		PENDING:
 			if p.distance_to(_path[0]) > TAP_SLOP:
-				_mode = CARRY if clock.call() - _down_at >= HOLD_TO_CARRY_MS else FLICK
+				_mode = CARRY if clock.call() - _down_at >= carry_delay_ms else FLICK
 				if _mode == CARRY:
 					_carry_to(p)
 		CARRY:

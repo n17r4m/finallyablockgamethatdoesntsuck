@@ -3,8 +3,7 @@ extends Control
 ## Laid out in density-independent pixels: see _fit_to_screen.
 
 const COLUMN_WIDTH := 360.0
-const TAP_HEIGHT := 48.0 # the usual minimum for a finger, on touch screens
-const POPUP_ROW_GAP := 21 # makes dropdown rows about 44 tall, so all six fit on a landscape phone
+const SettingsMenu := preload("res://scenes/settings_menu.gd")
 const GAP := 10
 const TWO_COLUMNS_BELOW := 640.0 # one column of tap-sized rows doesn't fit a landscape phone
 
@@ -17,6 +16,9 @@ var _blurb: Label
 var _columns: BoxContainer
 var _online: VBoxContainer
 var _offline: VBoxContainer
+var _menu: ScrollContainer
+var _play: Button
+var _settings: Button
 
 
 func _ready() -> void:
@@ -26,6 +28,7 @@ func _ready() -> void:
 	scroll.set_anchors_and_offsets_preset(PRESET_FULL_RECT)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	add_child(scroll)
+	_menu = scroll
 	var center := CenterContainer.new()
 	center.size_flags_horizontal = SIZE_EXPAND_FILL
 	center.size_flags_vertical = SIZE_EXPAND_FILL
@@ -55,12 +58,12 @@ func _ready() -> void:
 	_cpu = OptionButton.new()
 	_cpu.size_flags_horizontal = SIZE_EXPAND_FILL
 	_cpu.clip_text = true
-	_tappable(_cpu)
+	Controls.size_for_fingers(_cpu)
 	for n: String in CpuPlayer.OPPONENTS:
 		_cpu.add_item(n)
 	_cpu.add_item("Endless (solo)")
 	_level = OptionButton.new()
-	_tappable(_level)
+	Controls.size_for_fingers(_level)
 	for l: String in CpuPlayer.LEVELS:
 		_level.add_item(l)
 	_level.select(CpuPlayer.LEVELS.find(Net.cpu_level))
@@ -76,9 +79,14 @@ func _ready() -> void:
 	_offline.add_child(_blurb)
 	_cpu.item_selected.connect(_on_cpu_selected)
 	_on_cpu_selected(_cpu.selected)
-	_button(_offline, "Play", _play_offline)
+	_play = _button(_offline, "Play", _play_offline)
+	var bottom := HBoxContainer.new() # a row, so it adds no height to a landscape phone's menu
+	bottom.add_theme_constant_override("separation", GAP)
+	box.add_child(bottom)
+	_settings = _button(bottom, "Settings", _open_settings)
+	_settings.size_flags_horizontal = SIZE_EXPAND_FILL
 	if not OS.has_feature("web"):
-		_button(box, "Quit", get_tree().quit)
+		_button(bottom, "Quit", get_tree().quit).size_flags_horizontal = SIZE_EXPAND_FILL
 
 	_status = Label.new()
 	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -90,6 +98,8 @@ func _ready() -> void:
 
 	Net.status.connect(_on_status)
 	Net.opponent_joined.connect(_on_opponent_joined)
+	if Controls.navigates_by_focus():
+		_play.grab_focus()
 
 	var args := Scenes.launch_args
 	Scenes.launch_args = {}
@@ -149,28 +159,36 @@ func _column() -> VBoxContainer:
 	return column
 
 
-func _tappable(control: Control) -> void:
-	if Controls.touch_first:
-		control.custom_minimum_size.y = TAP_HEIGHT
-		if control is OptionButton:
-			control.get_popup().add_theme_constant_override("v_separation", POPUP_ROW_GAP)
+## Over the title, not instead of it: a host waiting for an opponent is still in this lobby.
+func _open_settings() -> void:
+	var menu := SettingsMenu.new()
+	menu.closed.connect(_on_settings_closed)
+	_menu.visible = false
+	add_child(menu)
+
+
+func _on_settings_closed() -> void:
+	_menu.visible = true
+	if Controls.navigates_by_focus():
+		_settings.grab_focus()
 
 
 func _field(box: Container, label: String, value: String) -> LineEdit:
 	var edit := LineEdit.new()
 	edit.placeholder_text = label
 	edit.text = value
-	_tappable(edit)
+	Controls.size_for_fingers(edit)
 	box.add_child(edit)
 	return edit
 
 
-func _button(box: Container, label: String, action: Callable) -> void:
+func _button(box: Container, label: String, action: Callable) -> Button:
 	var b := Button.new()
 	b.text = label
-	_tappable(b)
+	Controls.size_for_fingers(b)
 	b.pressed.connect(action)
 	box.add_child(b)
+	return b
 
 
 func _save_fields() -> void:

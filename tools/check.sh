@@ -32,6 +32,7 @@ run test_sim
 run test_touch
 run test_keys
 run test_title
+run test_settings
 run test_match_layout
 run test_leave
 run test_netcode

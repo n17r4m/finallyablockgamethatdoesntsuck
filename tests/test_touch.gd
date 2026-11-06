@@ -15,9 +15,10 @@ var ctrl: Node
 var now := 0
 
 
-func _init() -> void:
-	ctrl = load("res://autoload/controls.gd").new()
-	ctrl._ready() # registers the bindings; not in the tree, so call it ourselves
+func _initialize() -> void:
+	# Autoloads aren't ready until the first frame.
+	await process_frame
+	ctrl = root.get_node("Controls")
 	ctrl.board_mapper = func(p: Vector2) -> Vector2: return p / 100.0
 	ctrl.clock = func() -> int: return now
 	_test_carry_moves_block()
@@ -28,7 +29,6 @@ func _init() -> void:
 	_test_tap_wobble_is_not_a_swap()
 	_test_tap_moves_cursor()
 	_test_hold_rising_row_raises()
-	ctrl.free()
 	_failed += EXPECTED_CHECKS - _ran
 	print("PASS" if _failed == 0 else "FAIL (%d)" % _failed)
 	quit(0 if _failed == 0 else 1)

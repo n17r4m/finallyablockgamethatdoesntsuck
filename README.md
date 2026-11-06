@@ -7,14 +7,14 @@ Panel-de-Pon-style 1v1 versus, Godot 4.7, GDScript, rollback netcode. The game p
 - Two local clients: `tools/duo.sh` (host + join on 127.0.0.1).
 - Launch args (after `--`): `--host`, `--join=ADDR`, `--practice` (endless solo),
   `--cpu=NAME[:LEVEL]` (e.g. `--cpu=Architect:hard`), `--demo[=NAME[:LEVEL]]` (CPU vs CPU, loops).
-- Controls: keyboard (arrows/WASD, space/X swap, C/shift raise), gamepad (d-pad, A/B, shoulders), and
+- Controls: keyboard (arrows/WASD, space/X swap, C/shift raise), gamepad (d-pad or left stick, A/B, shoulders), and
   touch/mouse: drag a block sideways to carry it, tap to move the cursor, hold the rising row to raise.
-  Leave a match with esc, or on touch screens the Leave button; Android's back does the same, and quits from the title.
-- Renderer: `[video] renderer="3d"` (default) or `"2d"` in `user://settings.cfg`.
+  Leave a match with esc or start, or on touch screens the Leave button; Android's back does the same, and quits from the title.
+- Settings: the title's Settings button covers display, sound levels, key and gamepad bindings, and touch timing. Everything saves to `user://settings.cfg` as it changes. Bindings only decide which key makes which input bit, so they can't affect the sim or replays. Tests and tools (`godot -s`) start from the defaults and never touch this file.
 - Record footage: `godot --path . --write-movie out.avi --fixed-fps 60 -- --practice` (sim follows movie time).
 - Tests: `tools/check.sh` (about 2 minutes), or `tools/check.sh --full` for more seeds, CPU players and longer fuzzing. Set `GODOT` to use a
   different engine binary. Each test prints PASS and can also run alone with `godot --headless --path . -s tests/NAME.gd`:
-  `test_sim` (game rules), `test_touch` (touch controls), `test_keys` (short key and button presses reach the sim), `test_title` (title menu layout), `test_leave` (leaving a match by touch and Android's back), `test_match_layout` (boards on screen and touch mapping at phone and desktop shapes), `test_golden` (recorded games still play out exactly), `test_netcode` (lossy-link rollback soak), `test_net_matrix` (freezes, spikes, blackouts,
+  `test_sim` (game rules), `test_touch` (touch controls), `test_keys` (short key and button presses reach the sim), `test_title` (title menu layout), `test_settings` (settings menu, rebinding, saved settings), `test_leave` (leaving a match by touch and Android's back), `test_match_layout` (boards on screen and touch mapping at phone and desktop shapes), `test_golden` (recorded games still play out exactly), `test_netcode` (lossy-link rollback soak), `test_net_matrix` (freezes, spikes, blackouts,
   lopsided routes and fairness), `test_sim_fuzz` (board invariants, snapshots, P1/P2 mirror), `test_cpu` (CPU sanity, slow).
 - Replays: every real match saves to `user://replays` (`[replay] save` and `keep` in settings). Inspect one with `python3 tools/replay_check.py FILE`, or re-simulate it with `godot --headless --path . -s tools/replay_verify.gd -- FILE`.
 - Rust rules (needs `cargo`, which `tools/check.sh` skips if missing): `cd rust && cargo test`. Verify replays with `cargo run --release --bin replay_verify -- FILE_OR_DIR`, or time the rules with `cargo run --release --bin bench_sim -- ../tests/golden/cpu_1.fbgr`.
@@ -39,7 +39,7 @@ Panel-de-Pon-style 1v1 versus, Godot 4.7, GDScript, rollback netcode. The game p
 - `view/board_view.gd` — **the 2D→3D cut-off** (below).
 - `render/` — renderers that read only BoardView. `board_renderer_2d.gd` is placeholder art.
 - `autoload/` — Config (user://settings.cfg) → Controls (bindings) → Net (ENet / WebSocket, 1v1 handshake) → Scenes.
-- `scenes/` — boot → title/lobby → match. Match drives the session off the wall clock.
+- `scenes/` — boot → title/lobby (with the settings menu over it) → match. Match drives the session off the wall clock.
 
 ## The 2D→3D cut-off
 Gameplay is, and stays, a 2D grid. The only third dimension in a block game is presentational:

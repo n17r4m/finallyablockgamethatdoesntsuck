@@ -4,7 +4,6 @@ extends Node2D
 ## read BoardView only; config video/renderer picks "3d" (default) or "2d".
 
 const REPLAY_DIR := "user://replays"
-const KEYS_HINT := "arrows/WASD move · space/X swap · C/shift raise · or drag blocks · esc leave"
 const TOUCH_HINT := "drag a block to swap · tap to move the cursor · hold the bottom row to raise"
 const HINT_DP := 12 # font size in dp, for reading at arm's length on a phone
 const RETRY_TAP_DELAY_MS := 1000 # a player still dragging when the game ends isn't asking to retry
@@ -39,6 +38,7 @@ var _cpu: CpuPlayer # offline opponent on board 1
 var _pilot: CpuPlayer # demo mode: a CPU on your board too
 var _over_msec := -1 # when the game ended
 var _cam: Camera3D
+var _keys_hint: String = Controls.hint()
 var _leave_button: Button
 var _leave_asked_msec := -1 # when a tap asked to leave a running game, waiting for the second
 
@@ -240,7 +240,7 @@ func _exit_tree() -> void:
 
 
 func _process(delta: float) -> void:
-	if Input.is_action_just_pressed("ui_cancel"):
+	if Input.is_action_just_pressed("leave"):
 		_leave()
 		return
 	if _leave_asked_msec != -1 and Time.get_ticks_msec() - _leave_asked_msec >= LEAVE_CONFIRM_MS:
@@ -298,11 +298,12 @@ func _draw() -> void:
 				session.stats.resim, session.stats.stalls]
 	var dp := Controls.dp_scale()
 	var hud_size := maxi(16, int(11 * dp))
-	draw_string(font, Vector2(20, 14 + hud_size), hud, HORIZONTAL_ALIGNMENT_LEFT, -1, hud_size, Color(1, 1, 1, 0.5))
+	if Config.get_value("video", "show_stats"):
+		draw_string(font, Vector2(20, 14 + hud_size), hud, HORIZONTAL_ALIGNMENT_LEFT, -1, hud_size, Color(1, 1, 1, 0.5))
 	if Controls.touch_first:
 		_draw_touch_hint(font, view)
 	else:
-		draw_string(font, Vector2(20, view.y - 20), KEYS_HINT, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1, 1, 1, 0.4))
+		draw_string(font, Vector2(20, view.y - 20), _keys_hint, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1, 1, 1, 0.4))
 
 	var big := ""
 	var small := ""
@@ -321,7 +322,7 @@ func _draw() -> void:
 		small += ("   waiting for opponent…" if _rematch_sent and not _offline
 				else _retry_text())
 		if _pilot:
-			small = "   demo" if Controls.touch_first else "   demo — esc for title"
+			small = "   demo" if Controls.touch_first else "   demo — %s for title" % Controls.leave_name()
 	if _ended != "":
 		big = ""
 		small = _ended
@@ -350,7 +351,7 @@ func _draw_touch_hint(font: Font, view: Vector2) -> void:
 
 func _retry_text() -> String:
 	var again := "retry" if _offline else "rematch"
-	return "   tap for %s" % again if Controls.touch_first else "   swap for %s · esc for title" % again
+	return "   tap for %s" % again if Controls.touch_first else "   swap for %s · %s for title" % [again, Controls.leave_name()]
 
 
 func _on_desynced(tick: int) -> void:
@@ -359,7 +360,7 @@ func _on_desynced(tick: int) -> void:
 
 
 func _on_opponent_left() -> void:
-	_ended = "Opponent left — %s for title" % ("tap" if Controls.touch_first else "esc")
+	_ended = "Opponent left — %s for title" % ("tap" if Controls.touch_first else Controls.leave_name())
 
 
 ## Every real match is kept: a bug report is a file, and it replays exactly. Up to the last

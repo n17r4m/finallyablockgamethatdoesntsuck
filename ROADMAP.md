@@ -19,7 +19,7 @@ Feature list below is from memory of Crack Attack; correct it where it's wrong.
 | Computer opponent with difficulty levels | 5 personalities × 4 levels, stochastic plan search | done (tuning) |
 | Network versus | rollback P2P, ENet/WebSocket | **exceeds** (CA was lockstep TCP) |
 | Extreme mode (special blocks/garbage) | — | todo, design our own |
-| Sound / music | — | todo |
+| Sound / music | volume settings and audio buses, no sounds yet | todo |
 | Low-detail mode | 2D renderer, GL Compatibility | done |
 
 ## Beyond
@@ -50,5 +50,5 @@ Feature list below is from memory of Crack Attack; correct it where it's wrong.
 - Web, mobile and console builds from one codebase.
 - Touch controls (drag to swap).
 - Puzzle mode (the sim already supports hand-placed boards via `SimBoard.put`).
-- Accessibility: colour-blind palettes / shape glyphs per colour, remappable controls.
+- Accessibility: colour-blind palettes / shape glyphs per colour.
 - Difficulty levels scaling hover/flash/rise like Panel de Pon levels.
