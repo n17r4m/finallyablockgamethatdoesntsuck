@@ -13,7 +13,7 @@ Panel-de-Pon-style 1v1 versus, Godot 4.7, GDScript, rollback netcode. The game p
 - Record footage: `godot --path . --write-movie out.avi --fixed-fps 60 -- --practice` (sim follows movie time).
 - Tests: `tools/check.sh` (about 2 minutes), or `tools/check.sh --full` for more seeds, CPU players and longer fuzzing. Set `GODOT` to use a
   different engine binary. Each test prints PASS and can also run alone with `godot --headless --path . -s tests/NAME.gd`:
-  `test_sim` (game rules), `test_touch` (touch controls), `test_golden` (recorded games still play out exactly), `test_netcode` (lossy-link rollback soak), `test_net_matrix` (freezes, spikes, blackouts,
+  `test_sim` (game rules), `test_touch` (touch controls), `test_keys` (short key and button presses reach the sim), `test_golden` (recorded games still play out exactly), `test_netcode` (lossy-link rollback soak), `test_net_matrix` (freezes, spikes, blackouts,
   lopsided routes and fairness), `test_sim_fuzz` (board invariants, snapshots, P1/P2 mirror), `test_cpu` (CPU sanity, slow).
 - Replays: every real match saves to `user://replays` (`[replay] save` and `keep` in settings). Inspect one with `python3 tools/replay_check.py FILE`, or re-simulate it with `godot --headless --path . -s tools/replay_verify.gd -- FILE`.
 - Rust rules (needs `cargo`, which `tools/check.sh` skips if missing): `cd rust && cargo test`. Verify replays with `cargo run --release --bin replay_verify -- FILE_OR_DIR`, or time the rules with `cargo run --release --bin bench_sim -- ../tests/golden/cpu_1.fbgr`.

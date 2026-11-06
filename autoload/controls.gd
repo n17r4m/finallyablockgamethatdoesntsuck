@@ -47,6 +47,9 @@ var _grab := Vector2i(-1, -1) # the block being carried / the flick's swap, wher
 var _steps := PackedInt32Array() # queued swaps as left-cell x, in _grab.y's row
 var _swap_frame := false # last sample pressed swap; this one must release
 var _last_rise := 0
+var _presses := {} # action -> key/button presses no sample has delivered yet
+var _down := 0 # actions down, as of the last event or sample
+var _sent := 0 # the last sample
 
 
 func _ready() -> void:
@@ -62,6 +65,20 @@ func _ready() -> void:
 			var ev := InputEventJoypadButton.new()
 			ev.button_index = b
 			InputMap.action_add_event(action, ev)
+
+
+## Keys and buttons: count presses as they happen, since one can start and end between samples.
+## A press is the action going down, so a second key for a held action isn't one.
+func _input(event: InputEvent) -> void:
+	for action: String in BINDINGS:
+		if not event.is_action(action):
+			continue
+		var bit: int = BINDINGS[action].bit
+		if not Input.is_action_pressed(action):
+			_down &= ~bit
+		elif not _down & bit:
+			_down |= bit
+			_presses[action] = _presses.get(action, 0) + 1
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -191,10 +208,23 @@ func sample(b: SimBoard = null) -> int:
 				_row -= 1
 		_last_rise = b.rise
 	var mask := 0
+	_down = 0 # from Input itself: losing window focus releases keys without any event
 	for action: String in BINDINGS:
-		if Input.is_action_pressed(action):
-			mask |= BINDINGS[action].bit
-	return mask | _touch_mask(b)
+		var bit: int = BINDINGS[action].bit
+		var on := Input.is_action_pressed(action)
+		if on:
+			_down |= bit
+		# The sim sees a press when a bit goes from up to down, so a waiting press is sent
+		# as down, and if the bit is already down it goes up for one sample first.
+		var waiting: int = _presses.get(action, 0)
+		if waiting > 0:
+			on = not _sent & bit
+			if on:
+				_presses[action] = waiting - 1
+		if on:
+			mask |= bit
+	_sent = mask | _touch_mask(b)
+	return _sent
 
 
 func _touch_mask(b: SimBoard) -> int:
@@ -225,8 +255,11 @@ func _swappable(b: SimBoard, left: int, y: int) -> bool:
 	return true
 
 
-## Forget any touch in progress (match start/end).
+## Forget any touch in progress and any presses not yet sampled (match start/end).
+## A key still held stays held.
 func reset_touch() -> void:
+	_presses.clear()
+	_sent = 0
 	_mode = IDLE
 	_finger = -1
 	_grab = Vector2i(-1, -1)

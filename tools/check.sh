@@ -30,6 +30,7 @@ run() {
 
 run test_sim
 run test_touch
+run test_keys
 run test_netcode
 run test_golden
 if command -v python3 > /dev/null; then
