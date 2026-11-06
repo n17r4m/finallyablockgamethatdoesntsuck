@@ -88,6 +88,8 @@ var carry_delay_ms := 0
 var grab_mode := false
 ## "keys", "pad", "mouse" or "touch" once the player has used one: see hint_device().
 var last_device := ""
+## Inputs reach the board late, as they do online, so the board can't say when a swap has finished.
+var input_is_delayed := false
 ## Milliseconds; replaceable so tests can drive time.
 var clock := func() -> int: return Time.get_ticks_msec()
 
@@ -109,7 +111,8 @@ var _held := false # grab cursor: a block is in hand, at _grab
 var _keys_before := 0 # grab cursor: the keys of the last sample
 var _repeat_at := 0 # grab cursor: when a held direction next moves
 var _after_steps := Vector2i.ZERO # grab cursor: moves made while a let-go block finished moving
-var _step_at := -STEP_MS # grab cursor: when the last swap was sent
+var _step_at := -STEP_MS # when the last gesture's swap was sent
+var _step_cell := NO_CELL # and its left cell and row
 var _view: SimBoard # the board of the last sample
 var _pointer := Vector2.ZERO # where a floating pointer is, on screen
 var _floating := false # the cursor is following it
@@ -691,10 +694,12 @@ func _touch_mask(b: SimBoard) -> int:
 		_stays_on_pair = true
 	if not _steps.is_empty() and b != null and _refuses(b, _steps[0], _grab.y):
 		_steps.clear() # waiting wouldn't help, and it would go off much later
-	if not _steps.is_empty() and (b == null or _swappable(b, _steps[0], _grab.y)):
+	if not _steps.is_empty() and not _too_soon(_steps[0], _grab.y) and (b == null or _swappable(b, _steps[0], _grab.y)):
 		var left := _steps[0]
 		_steps.remove_at(0)
 		var row := _grab.y
+		_step_at = clock.call()
+		_step_cell = Vector2i(left, row)
 		_grab.x = left + 1 if _grab.x == left else left
 		if _stays_on_pair:
 			_stays_on_pair = false
@@ -707,6 +712,13 @@ func _touch_mask(b: SimBoard) -> int:
 			_grab = Vector2i(-1, -1) # a finished tap/flick moves the cursor once
 		return mask | t
 	return mask
+
+
+## With delayed input the board still shows these blocks at rest when they're already swapping,
+## and the sim ignores a swap of a block mid-swap. A swap elsewhere has nothing to wait for.
+func _too_soon(left: int, y: int) -> bool:
+	return (input_is_delayed and y == _step_cell.y and absi(left - _step_cell.x) <= 1
+			and clock.call() - _step_at < STEP_MS)
 
 
 ## Both cells of a swap are ready (the previous swap's animation has finished).
@@ -736,6 +748,7 @@ func reset_touch() -> void:
 	_keys_before = 0
 	_after_steps = Vector2i.ZERO
 	_step_at = -STEP_MS
+	_step_cell = NO_CELL
 	_last_rise = 0
 	_view = null
 	_stop_floating()

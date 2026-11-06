@@ -71,6 +71,7 @@ func _ready() -> void:
 	_layout()
 	get_viewport().size_changed.connect(_layout) # a phone can turn at any time
 	Controls.reset_touch()
+	Controls.input_is_delayed = delay > 0
 	if not _pilot:
 		Controls.board_mapper = _views[Net.local_idx].screen_to_cell
 	_build_leave_button()
