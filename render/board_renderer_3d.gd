@@ -24,6 +24,7 @@ var _incoming: Label3D
 var _warning: Label3D
 var _well_mat: StandardMaterial3D
 var _clock := 0.0
+var _compact := false
 
 
 func _ready() -> void:
@@ -67,13 +68,40 @@ func _ready() -> void:
 		m.material_override = white
 		_cursor.add_child(m)
 
-	_title = _label(Vector3(-W / 2.0, H / 2.0 + 0.7, 0), 40, HORIZONTAL_ALIGNMENT_LEFT)
-	_incoming = _label(Vector3(-W / 2.0, H / 2.0 + 1.3, 0), 32, HORIZONTAL_ALIGNMENT_LEFT)
+	_title = _label(Vector3.ZERO, 40, HORIZONTAL_ALIGNMENT_LEFT)
+	_incoming = _label(Vector3.ZERO, 32, HORIZONTAL_ALIGNMENT_LEFT)
 	_incoming.modulate = GARBAGE_COLOR
 	_callout = _label(Vector3(0, -H / 2.0 + 2.0, 1.5), 72, HORIZONTAL_ALIGNMENT_CENTER) # floats in front of the stack
 	_callout.modulate = Color("e8c547")
 	_warning = _label(Vector3(0, H / 2.0 - 0.6, 0.8), 48, HORIZONTAL_ALIGNMENT_CENTER) # inside the well's top
 	_warning.modulate = Color("ff5a5a")
+	arrange(position, 1.0)
+
+
+## Where the board sits and how big. A compact board is a small view of the opponent: its
+## name and score go underneath, at a size that doesn't shrink with it, in lines that fit its width.
+func arrange(at: Vector3, board_scale: float, compact := false) -> void:
+	position = at
+	scale = Vector3.ONE * board_scale
+	_compact = compact
+	var left := -W / 2.0
+	var text_scale := Vector3.ONE / board_scale
+	_title.scale = text_scale
+	_incoming.scale = text_scale
+	_title.font_size = 28 if compact else 40
+	_incoming.font_size = 24 if compact else 32
+	_title.vertical_alignment = VERTICAL_ALIGNMENT_TOP if compact else VERTICAL_ALIGNMENT_CENTER
+	_incoming.vertical_alignment = _title.vertical_alignment
+	_incoming.autowrap_mode = TextServer.AUTOWRAP_WORD if compact else TextServer.AUTOWRAP_OFF
+	_incoming.width = (W + 0.3) * board_scale / _incoming.pixel_size
+	if compact:
+		var below := -H / 2.0 - 1.0 - 0.3 / board_scale # past the rising row
+		_title.position = Vector3(left, below, 0)
+		_incoming.position = Vector3(left, below - 1.1 / board_scale, 0)
+	else:
+		_title.position = Vector3(left, H / 2.0 + 0.7, 0)
+		_incoming.position = Vector3(left, H / 2.0 + 1.3, 0)
+	_warning.visible = not compact # too small to read, and the player's eyes are elsewhere
 
 
 func _process(delta: float) -> void:
@@ -107,7 +135,8 @@ func _process(delta: float) -> void:
 	_mm.visible_instance_count = n
 
 	_cursor.position = _to3d(BoardView.cursor(board)) + Vector3(0.5, 0, 0)
-	_title.text = "%s  %d" % [label, board.score]
+	_title.text = ("%s\n%d" % [label.replace(" (", "\n("), board.score] if _compact
+			else "%s  %d" % [label, board.score])
 	var incoming := BoardView.incoming(board)
 	_incoming.text = "" if incoming.is_empty() else "incoming " + " ".join(
 			incoming.map(func(v: Vector2i) -> String: return "%dx%d" % [v.x, v.y]))

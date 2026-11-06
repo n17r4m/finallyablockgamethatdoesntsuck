@@ -31,6 +31,10 @@ const FLICK_VERTICAL := 1.2 # |dy| > this * |dx| is not a swap
 
 enum { IDLE, PENDING, CARRY, FLICK, RAISING }
 
+## A touch screen is the likely way to play, so say what fingers do and size things for them.
+## Not DisplayServer.is_touchscreen_available(): emulate_touch_from_mouse makes that always true.
+var touch_first: bool = (JavaScriptBridge.eval("'ontouchstart' in window", true) if OS.has_feature("web")
+		else OS.has_feature("mobile"))
 ## Set by the match: screen position -> Vector2 in cell units (x right from the
 ## left edge, y down from the top visible row; y >= H is the rising row).
 ## Unset (or no local human) means touch is ignored.
@@ -65,6 +69,17 @@ func _ready() -> void:
 			var ev := InputEventJoypadButton.new()
 			ev.button_index = b
 			InputMap.action_add_event(action, ev)
+
+
+## How many project units make one density-independent pixel (1/160 inch, a CSS pixel on the
+## web) at the project's normal stretch. Never below 1, so a big window just zooms in.
+func dp_scale() -> float:
+	var window := get_window()
+	var fit := Vector2(window.size) / Vector2(window.content_scale_size)
+	# On Android screen_get_scale() isn't the density: a Pixel 10 says 1.8 at 420 dpi (2.625).
+	var native_mobile := OS.has_feature("mobile") and not OS.has_feature("web")
+	var density := DisplayServer.screen_get_dpi() / 160.0 if native_mobile else DisplayServer.screen_get_scale()
+	return maxf(1.0, density / minf(fit.x, fit.y))
 
 
 ## Keys and buttons: count presses as they happen, since one can start and end between samples.

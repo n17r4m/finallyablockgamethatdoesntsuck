@@ -4,6 +4,29 @@ extends Node2D
 ## read BoardView only; config video/renderer picks "3d" (default) or "2d".
 
 const REPLAY_DIR := "user://replays"
+const KEYS_HINT := "arrows/WASD move · space/X swap · C/shift raise · or drag blocks · esc leave"
+const TOUCH_HINT := "drag a block to swap · tap to move the cursor · hold the bottom row to raise"
+const HINT_DP := 12 # font size in dp, for reading at arm's length on a phone
+const RETRY_TAP_DELAY_MS := 1000 # a player still dragging when the game ends isn't asking to retry
+const LEAVE_SIZE_DP := Vector2(72, 48) # 48 is the usual minimum for a finger
+const LEAVE_MARGIN_DP := 8.0
+const LEAVE_FONT_DP := 14.0
+const LEAVE_CONFIRM_MS := 3000
+const CAM_Y := 0.3
+const CAM_Z := 20.5
+const CAM_FOV := 42.0
+## Narrower than this and side-by-side boards at the normal view don't fit: 19.3 cells across
+## out of the 15.74 the camera sees top to bottom. Then your board is sized for fingers, with
+## the opponent's small beside it. Two equal boards would leave cells of 20 dp on a phone.
+const SIDE_BY_SIDE_ASPECT := 1.24
+const OPPONENT_SCALE := 0.25
+# The narrow layout, in cells of your board.
+const WELL := SimConst.W + 0.3
+const GAP := 0.2
+const EDGE := 0.1
+const ABOVE_BOARD := 1.5 # title and incoming garbage
+const BELOW_BOARD := 1.15 # the rising row
+const HINT_ROOM := 1.0 # under the board, if the screen has it, clear of the phone's own gestures
 
 var session: RollbackSession
 var _offline := false
@@ -14,6 +37,10 @@ var _last_usec := 0
 var _views: Array[Node] = [] # BoardRenderer3D or BoardRenderer2D, indexed by board
 var _cpu: CpuPlayer # offline opponent on board 1
 var _pilot: CpuPlayer # demo mode: a CPU on your board too
+var _over_msec := -1 # when the game ended
+var _cam: Camera3D
+var _leave_button: Button
+var _leave_asked_msec := -1 # when a tap asked to leave a running game, waiting for the second
 
 
 func _ready() -> void:
@@ -37,10 +64,54 @@ func _ready() -> void:
 		_build_2d()
 	else:
 		_build_3d()
+	_layout()
+	get_viewport().size_changed.connect(_layout) # a phone can turn at any time
 	Controls.reset_touch()
 	if not _pilot:
 		Controls.board_mapper = _views[Net.local_idx].screen_to_cell
+	_build_leave_button()
+	Scenes.back_pressed.connect(_ask_to_leave)
 	_last_usec = Time.get_ticks_usec()
+
+
+## Being a Control, it takes its touches before the board gestures and tap-to-retry can see them.
+func _build_leave_button() -> void:
+	var layer := CanvasLayer.new()
+	add_child(layer)
+	_leave_button = Button.new()
+	_leave_button.text = "Leave"
+	_leave_button.visible = Controls.touch_first
+	_leave_button.focus_mode = Control.FOCUS_NONE # or space, a swap key, would press it
+	_leave_button.modulate.a = 0.7
+	_leave_button.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	_leave_button.pressed.connect(_ask_to_leave)
+	layer.add_child(_leave_button)
+	get_window().size_changed.connect(_fit_leave_button)
+	_fit_leave_button()
+
+
+func _fit_leave_button() -> void:
+	var dp := Controls.dp_scale()
+	_leave_button.add_theme_font_size_override("font_size", int(LEAVE_FONT_DP * dp))
+	_leave_button.offset_left = -(LEAVE_MARGIN_DP + LEAVE_SIZE_DP.x) * dp
+	_leave_button.offset_right = -LEAVE_MARGIN_DP * dp
+	_leave_button.offset_top = LEAVE_MARGIN_DP * dp
+	_leave_button.offset_bottom = (LEAVE_MARGIN_DP + LEAVE_SIZE_DP.y) * dp
+
+
+## The button and Android's back. A stray tap shouldn't throw away a game still being played,
+## so that takes a second one; there's nothing to lose once it's over.
+func _ask_to_leave() -> void:
+	if _ended != "" or session.state.winner != -1 or _pilot or _leave_asked_msec != -1:
+		_leave()
+		return
+	_leave_asked_msec = Time.get_ticks_msec()
+	_leave_button.text = "Sure?"
+
+
+func _leave() -> void:
+	Net.leave()
+	Scenes.goto(Scenes.TITLE)
 
 
 func _rules_name() -> String:
@@ -50,11 +121,10 @@ func _rules_name() -> String:
 func _build_3d() -> void:
 	var world := Node3D.new()
 	add_child(world)
-	var cam := Camera3D.new()
-	cam.position = Vector3(0, 0.3, 20.5)
-	cam.fov = 42
-	world.add_child(cam)
-	cam.make_current()
+	_cam = Camera3D.new()
+	_cam.fov = CAM_FOV
+	world.add_child(_cam)
+	_cam.make_current()
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-35, -30, 0)
 	world.add_child(sun)
@@ -69,7 +139,6 @@ func _build_3d() -> void:
 	world.add_child(we)
 	for p in 2:
 		var v := BoardRenderer3D.new()
-		v.position = Vector3(0.0 if _solo() else -6.5 + 13.0 * p, 0, 0)
 		v.label = _label(p)
 		v.visible = not (_solo() and p == 1)
 		world.add_child(v)
@@ -79,11 +148,77 @@ func _build_3d() -> void:
 func _build_2d() -> void:
 	for p in 2:
 		var v := BoardRenderer2D.new()
-		v.position = Vector2(520.0 if _solo() else 280.0 + p * 480.0, 120)
 		v.label = _label(p)
 		v.visible = not (_solo() and p == 1)
 		add_child(v)
 		_views.append(v)
+
+
+func _layout() -> void:
+	var view := get_viewport_rect().size
+	if _cam:
+		_layout_3d(view)
+	else:
+		_layout_2d(view)
+
+
+func _narrow(view: Vector2) -> bool:
+	return view.x / view.y < SIDE_BY_SIDE_ASPECT
+
+
+## How wide the narrow layout is, in cells of your board.
+func _narrow_width() -> float:
+	return WELL + 2 * EDGE + (0.0 if _solo() else GAP + WELL * OPPONENT_SCALE)
+
+
+func _narrow_height() -> float:
+	return ABOVE_BOARD + SimConst.H + BELOW_BOARD + 2 * EDGE
+
+
+func _layout_3d(view: Vector2) -> void:
+	if not _narrow(view):
+		_cam.position = Vector3(0, CAM_Y, CAM_Z)
+		for p in 2:
+			_views[p].arrange(Vector3(0.0 if _solo() else -6.5 + 13.0 * p, 0, 0), 1.0)
+		return
+	var seen := maxf(_narrow_height(), _narrow_width() * view.y / view.x) # cells top to bottom
+	var spare := seen - _narrow_height()
+	var bottom := -SimConst.H / 2.0 - BELOW_BOARD - EDGE - minf(spare / 2.0, HINT_ROOM)
+	_cam.position = Vector3(0, bottom + seen / 2.0, seen / 2.0 / tan(deg_to_rad(CAM_FOV / 2.0)))
+	var me := Net.local_idx
+	var left := -_narrow_width() / 2.0 + EDGE
+	_views[me].arrange(Vector3(left + WELL / 2.0, 0, 0), 1.0)
+	var them_x := left + WELL + GAP + WELL * OPPONENT_SCALE / 2.0
+	var them_y := SimConst.H / 2.0 * (1.0 - OPPONENT_SCALE)
+	_views[1 - me].arrange(Vector3(them_x, them_y, 0), OPPONENT_SCALE, true)
+
+
+func _layout_2d(view: Vector2) -> void:
+	if not _narrow(view):
+		# Boards keep their place on a 1280 wide screen, and stay centred on a wider one.
+		var inset := (view.x - 1280.0) / 2.0
+		for p in 2:
+			_views[p].position = Vector2(inset + (520.0 if _solo() else 280.0 + p * 480.0), 120)
+			_views[p].scale = Vector2.ONE
+			_views[p].text_scale = 1.0
+			_views[p].compact = false
+		return
+	var cell := minf(view.x / _narrow_width(), view.y / _narrow_height())
+	var unit := cell / BoardRenderer2D.CELL
+	var dp := Controls.dp_scale()
+	var spare := view.y - _narrow_height() * cell
+	var top := view.y - (BELOW_BOARD + EDGE + SimConst.H) * cell - minf(spare / 2.0, HINT_ROOM * cell)
+	var left := (view.x - (_narrow_width() - 2 * EDGE) * cell) / 2.0
+	var mine: BoardRenderer2D = _views[Net.local_idx]
+	mine.position = Vector2(left + 0.15 * cell, top)
+	mine.scale = Vector2.ONE * unit
+	mine.text_scale = 17.0 * dp / (20.0 * unit)
+	mine.compact = false
+	var theirs: BoardRenderer2D = _views[1 - Net.local_idx]
+	theirs.position = Vector2(left + (WELL + GAP + 0.15 * OPPONENT_SCALE) * cell, top)
+	theirs.scale = Vector2.ONE * unit * OPPONENT_SCALE
+	theirs.text_scale = 13.0 * dp / (20.0 * unit * OPPONENT_SCALE)
+	theirs.compact = true
 
 
 func _solo() -> bool:
@@ -106,9 +241,11 @@ func _exit_tree() -> void:
 
 func _process(delta: float) -> void:
 	if Input.is_action_just_pressed("ui_cancel"):
-		Net.leave()
-		Scenes.goto(Scenes.TITLE)
+		_leave()
 		return
+	if _leave_asked_msec != -1 and Time.get_ticks_msec() - _leave_asked_msec >= LEAVE_CONFIRM_MS:
+		_leave_asked_msec = -1
+		_leave_button.text = "Leave"
 	var now := Time.get_ticks_usec()
 	# Movie Maker (--write-movie) renders slower than real time; follow its fixed delta
 	# so recorded trailers play at true speed.
@@ -129,6 +266,8 @@ func _process(delta: float) -> void:
 	if _pilot and session.state.winner != -1 and session.state.tick % (SimConst.TICK_HZ * 4) < SimConst.TICKS_PER_FRAME:
 		_rematch_sent = true
 		Net.request_rematch() # demo loops
+	if session.state.winner != -1 and _over_msec == -1:
+		_over_msec = Time.get_ticks_msec()
 	if session.state.winner != -1 and not _rematch_sent and Input.is_action_just_pressed("swap"):
 		_rematch_sent = true
 		Net.request_rematch()
@@ -137,16 +276,33 @@ func _process(delta: float) -> void:
 	queue_redraw()
 
 
+## Keyboards swap and escape at the end of a match (see _process); fingers tap.
+func _unhandled_input(event: InputEvent) -> void:
+	if not Controls.touch_first or not (event is InputEventScreenTouch and event.pressed):
+		return
+	if _ended != "":
+		_leave()
+	elif (_over_msec != -1 and not _pilot and not _rematch_sent
+			and Time.get_ticks_msec() - _over_msec >= RETRY_TAP_DELAY_MS):
+		_rematch_sent = true
+		Net.request_rematch()
+
+
 func _draw() -> void:
 	var font := ThemeDB.fallback_font
+	var view := get_viewport_rect().size
 	var s := session.state
 	var hud := "%d Hz %s" % [SimConst.TICK_HZ, _rules_name()]
 	if not _offline:
 		hud += "   rtt %d ms   rollbacks %d   resim %d   stalls %d" % [Net.rtt_ms, session.stats.rollbacks,
 				session.stats.resim, session.stats.stalls]
-	draw_string(font, Vector2(20, 30), hud, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1, 1, 1, 0.5))
-	draw_string(font, Vector2(20, 700), "arrows/WASD move · space/X swap · C/shift raise · or drag blocks · esc leave",
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1, 1, 1, 0.4))
+	var dp := Controls.dp_scale()
+	var hud_size := maxi(16, int(11 * dp))
+	draw_string(font, Vector2(20, 14 + hud_size), hud, HORIZONTAL_ALIGNMENT_LEFT, -1, hud_size, Color(1, 1, 1, 0.5))
+	if Controls.touch_first:
+		_draw_touch_hint(font, view)
+	else:
+		draw_string(font, Vector2(20, view.y - 20), KEYS_HINT, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1, 1, 1, 0.4))
 
 	var big := ""
 	var small := ""
@@ -163,18 +319,38 @@ func _draw() -> void:
 			if _pilot and s.winner != 2:
 				big = "%s WINS" % _label(s.winner).get_slice(" (", 0).to_upper()
 		small += ("   waiting for opponent…" if _rematch_sent and not _offline
-				else "   swap for %s · esc for title" % ("retry" if _offline else "rematch"))
+				else _retry_text())
 		if _pilot:
-			small = "   demo — esc for title"
+			small = "   demo" if Controls.touch_first else "   demo — esc for title"
 	if _ended != "":
 		big = ""
 		small = _ended
+	var big_size := maxi(72, int(40 * dp))
+	var small_size := maxi(24, int(16 * dp))
 	if big != "":
-		draw_string_outline(font, Vector2(0, 360), big, HORIZONTAL_ALIGNMENT_CENTER, 1280, 72, 12, Color.BLACK)
-		draw_string(font, Vector2(0, 360), big, HORIZONTAL_ALIGNMENT_CENTER, 1280, 72)
+		draw_string_outline(font, Vector2(0, view.y / 2), big, HORIZONTAL_ALIGNMENT_CENTER, view.x, big_size, big_size / 6, Color.BLACK)
+		draw_string(font, Vector2(0, view.y / 2), big, HORIZONTAL_ALIGNMENT_CENTER, view.x, big_size)
 	if small != "":
-		draw_string_outline(font, Vector2(0, 410), small, HORIZONTAL_ALIGNMENT_CENTER, 1280, 24, 8, Color.BLACK)
-		draw_string(font, Vector2(0, 410), small, HORIZONTAL_ALIGNMENT_CENTER, 1280, 24)
+		var at := Vector2(0, view.y / 2 + small_size * 2)
+		draw_string_outline(font, at, small, HORIZONTAL_ALIGNMENT_CENTER, view.x, small_size, small_size / 3, Color.BLACK)
+		draw_string(font, at, small, HORIZONTAL_ALIGNMENT_CENTER, view.x, small_size)
+
+
+## Only during the countdown: at this size it covers the blocks the fingers are working on.
+func _draw_touch_hint(font: Font, view: Vector2) -> void:
+	if session.state.tick >= SimConst.COUNTDOWN_TICKS:
+		return
+	var hint_size := int(HINT_DP * Controls.dp_scale())
+	var width := view.x - 40
+	var height := font.get_multiline_string_size(TOUCH_HINT, HORIZONTAL_ALIGNMENT_CENTER, width, hint_size).y
+	var at := Vector2(20, view.y - 10 - height + font.get_ascent(hint_size))
+	draw_multiline_string_outline(font, at, TOUCH_HINT, HORIZONTAL_ALIGNMENT_CENTER, width, hint_size, -1, hint_size / 3, Color.BLACK)
+	draw_multiline_string(font, at, TOUCH_HINT, HORIZONTAL_ALIGNMENT_CENTER, width, hint_size)
+
+
+func _retry_text() -> String:
+	var again := "retry" if _offline else "rematch"
+	return "   tap for %s" % again if Controls.touch_first else "   swap for %s · esc for title" % again
 
 
 func _on_desynced(tick: int) -> void:
@@ -183,7 +359,7 @@ func _on_desynced(tick: int) -> void:
 
 
 func _on_opponent_left() -> void:
-	_ended = "Opponent left — esc for title"
+	_ended = "Opponent left — %s for title" % ("tap" if Controls.touch_first else "esc")
 
 
 ## Every real match is kept: a bug report is a file, and it replays exactly. Up to the last

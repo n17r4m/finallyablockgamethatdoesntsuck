@@ -12,6 +12,8 @@ const BG := Color(0.08, 0.08, 0.12)
 
 var board: SimBoard
 var label := ""
+var text_scale := 1.0 # so text reads the same whatever the board's scale
+var compact := false # a small view of the opponent: name and score under the board
 
 
 ## Screen point -> cell units (x right, y down from the top visible row; y >= H is
@@ -80,20 +82,30 @@ func _draw() -> void:
 	var cur := BoardView.cursor(board)
 	draw_rect(Rect2(cur.x * CELL, cur.y * CELL, CELL * 2, CELL), Color.WHITE, false, 3.0)
 
-	draw_string(font, Vector2(0, -16), "%s   %d%s" % [label, board.score,
-			"   TOPPED OUT" if board.lost else ""], HORIZONTAL_ALIGNMENT_LEFT, -1, 20)
+	var title_size := int(20 * text_scale)
+	var small_size := int(16 * text_scale)
 	var incoming := BoardView.incoming(board)
+	var txt := " ".join(incoming.map(func(v: Vector2i) -> String: return "%dx%d" % [v.x, v.y]))
+	if compact:
+		var text := "%s\n%d%s" % [label.replace(" (", "\n("), board.score, "\nTOPPED OUT" if board.lost else ""]
+		var at := Vector2(0, size.y + CELL + title_size)
+		draw_multiline_string(font, at, text, HORIZONTAL_ALIGNMENT_LEFT, size.x, title_size)
+		if not incoming.is_empty():
+			at.y += font.get_multiline_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, size.x, title_size).y
+			draw_multiline_string(font, at, "incoming " + txt, HORIZONTAL_ALIGNMENT_LEFT, size.x, small_size, -1, GARBAGE_COLOR)
+		return
+	draw_string(font, Vector2(0, -16), "%s   %d%s" % [label, board.score,
+			"   TOPPED OUT" if board.lost else ""], HORIZONTAL_ALIGNMENT_LEFT, -1, title_size)
 	if not incoming.is_empty():
-		var txt := " ".join(incoming.map(func(v: Vector2i) -> String: return "%dx%d" % [v.x, v.y]))
-		draw_string(font, Vector2(0, -44), "incoming " + txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, GARBAGE_COLOR)
+		draw_string(font, Vector2(0, -16 - title_size - 8), "incoming " + txt, HORIZONTAL_ALIGNMENT_LEFT, -1, small_size, GARBAGE_COLOR)
 	var warn := PackedStringArray()
 	if BoardView.overflow_rows(board) > 0:
 		warn.append("+%d above" % BoardView.overflow_rows(board))
 	if BoardView.grace_seconds(board) >= 0.0:
 		warn.append("%.1fs" % BoardView.grace_seconds(board))
 	if not warn.is_empty():
-		draw_string(font, Vector2(0, 16), "  ".join(warn), HORIZONTAL_ALIGNMENT_CENTER, size.x, 22, Color("ff5a5a"))
+		draw_string(font, Vector2(0, 16), "  ".join(warn), HORIZONTAL_ALIGNMENT_CENTER, size.x, int(22 * text_scale), Color("ff5a5a"))
 	var callout := BoardView.callout(board)
 	if callout != "":
-		draw_string(font, Vector2(0, size.y + 34), callout, HORIZONTAL_ALIGNMENT_CENTER, size.x, 26,
+		draw_string(font, Vector2(0, size.y + 34), callout, HORIZONTAL_ALIGNMENT_CENTER, size.x, int(26 * text_scale),
 				Color("e8c547"))
