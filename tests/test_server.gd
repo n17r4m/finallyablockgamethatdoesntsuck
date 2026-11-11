@@ -73,8 +73,8 @@ func _finish() -> void:
 
 
 func _on_welcomed(c: int, code: String) -> void:
-	# Only the host brings rules; whoever joins plays on them.
-	_links[c].room(code, _custom if c == 0 else null)
+	# Whoever gets there first hosts, and the host's rules are the room's: a joiner's are ignored.
+	_links[c].room(code, _custom)
 
 
 ## Everything here is indexed by link. Which seat a link gets is up to the server.
