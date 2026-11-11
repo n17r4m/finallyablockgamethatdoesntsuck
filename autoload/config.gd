@@ -4,7 +4,7 @@ extends Node
 const PATH := "user://settings.cfg"
 const DEFAULTS := {
 	"player": {"name": "Player"},
-	"net": {"address": "127.0.0.1", "port": 47100, "transport": "enet", "input_delay_frames": 2},
+	"net": {"address": "127.0.0.1", "port": 47100, "transport": "enet", "input_delay_frames": 2, "server": "", "room": ""},
 	"replay": {"save": true, "keep": 50},
 	"sim": {"backend": "auto"}, # "auto" uses the Rust rules where available, "gdscript" never does
 	"video": {"fullscreen": false, "vsync": true, "max_fps": 0, "renderer": "3d", "show_stats": true},

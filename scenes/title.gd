@@ -10,6 +10,8 @@ const TWO_COLUMNS_BELOW := 640.0 # one column of tap-sized rows doesn't fit a la
 var _status: Label
 var _name: LineEdit
 var _address: LineEdit
+var _room: LineEdit
+var _quick: Button
 var _cpu: OptionButton
 var _level: OptionButton
 var _blurb: Label
@@ -54,10 +56,24 @@ func _ready() -> void:
 	_offline = _column()
 
 	_name = _field(_online, "Name", Config.get_value("player", "name"))
-	_address = _field(_online, "Host address", Config.get_value("net", "address"))
+	# The internet, through the match server.
+	_quick = _button(_online, "Quick match", _quick_match)
+	var room_row := HBoxContainer.new()
+	room_row.add_theme_constant_override("separation", GAP)
+	_online.add_child(room_row)
+	_room = _field(room_row, "Room code", "")
+	_room.max_length = 16
+	_room.size_flags_horizontal = SIZE_EXPAND_FILL
+	_room.text_submitted.connect(func(_t: String) -> void: _play_room())
+	_button(room_row, "Play a friend", _play_room).tooltip_text = "Leave the code empty to make a room and copy an invite link"
+	# The same room, on a LAN, without a server.
+	_address = _field(_online, "LAN host address", Config.get_value("net", "address"))
+	var lan_row := HBoxContainer.new()
+	lan_row.add_theme_constant_override("separation", GAP)
+	_online.add_child(lan_row)
 	if can_host:
-		_button(_online, "Host", _host)
-	_button(_online, "Join", _join)
+		_button(lan_row, "Host", _host).size_flags_horizontal = SIZE_EXPAND_FILL
+	_button(lan_row, "Join", _join).size_flags_horizontal = SIZE_EXPAND_FILL
 	var row := HBoxContainer.new()
 	_cpu = OptionButton.new()
 	_cpu.size_flags_horizontal = SIZE_EXPAND_FILL
@@ -209,6 +225,27 @@ func _button(box: Container, label: String, action: Callable) -> Button:
 func _save_fields() -> void:
 	Config.set_value("player", "name", _name.text)
 	Config.set_value("net", "address", _address.text)
+
+
+func _quick_match() -> void:
+	_save_fields()
+	Net.play_online()
+
+
+## A code joins that room. No code makes one, and copies a link that opens the web game in it.
+func _play_room() -> void:
+	_save_fields()
+	var code := ""
+	for c in _room.text.strip_edges().to_upper():
+		if (c >= "A" and c <= "Z") or (c >= "0" and c <= "9"):
+			code += c
+	if code == "":
+		code = Net.new_room_code()
+		var link := Net.invite_link(code)
+		if link != "":
+			DisplayServer.clipboard_set(link)
+	_room.text = code
+	Net.play_online(code)
 
 
 func _host() -> void:

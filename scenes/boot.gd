@@ -14,14 +14,16 @@ func _ready() -> void:
 	_read_page_args()
 	if Scenes.launch_args.has("server"):
 		Net.connect_server(str(Scenes.launch_args.server), str(Scenes.launch_args.get("room", "")))
+	elif Scenes.launch_args.has("room"):
+		Net.play_online(str(Scenes.launch_args.room)) # an invite link, to this site's own server
 	for role in ["host", "join", "practice"]:
 		if Scenes.launch_args.has(role):
 			get_window().title += " [%s]" % role
 	Scenes.goto(Scenes.TITLE)
 
 
-## On the web, ?server=wss://...&room=CODE in the page address does what launch args do, which
-## is what makes an invite a link.
+## On the web, ?room=CODE (and optionally server=wss://...) in the page address does what launch
+## args do, which is what makes an invite a link.
 func _read_page_args() -> void:
 	if not OS.has_feature("web"):
 		return

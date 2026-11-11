@@ -14,6 +14,7 @@ const LEAVE_SIZE_DP := Vector2(72, 48) # 48 is the usual minimum for a finger
 const LEAVE_MARGIN_DP := 8.0
 const LEAVE_FONT_DP := 14.0
 const LEAVE_CONFIRM_MS := 3000
+const NOTICE_MS := 8000 # how long a message from the server's operator stays up
 const CAM_Y := 0.3
 const CAM_Z := 20.5
 const CAM_FOV := 42.0
@@ -45,6 +46,8 @@ var _over_msec := -1 # when the game ended
 var _cam: Camera3D
 var _leave_button: Button
 var _leave_asked_msec := -1 # when a tap asked to leave a running game, waiting for the second
+var _notice := ""
+var _notice_msec := -1
 
 
 func _ready() -> void:
@@ -64,6 +67,7 @@ func _ready() -> void:
 		session.outgoing.connect(Net.send)
 		Net.packet.connect(session.receive)
 		Net.opponent_left.connect(_on_opponent_left)
+		Net.notice.connect(_on_notice)
 	if Config.get_value("video", "renderer") == "2d":
 		_build_2d()
 	else:
@@ -233,7 +237,9 @@ func _solo() -> bool:
 func _label(p: int) -> String:
 	if p == Net.local_idx:
 		return "Overmind (%s)" % Net.cpu_level if _pilot else "YOU"
-	return "%s (%s)" % [Net.cpu_name, Net.cpu_level] if _cpu else "THEM"
+	if _cpu:
+		return "%s (%s)" % [Net.cpu_name, Net.cpu_level]
+	return Net.opponent_name.to_upper() if Net.opponent_name != "" else "THEM"
 
 
 func _exit_tree() -> void:
@@ -332,10 +338,16 @@ func _draw() -> void:
 			small = "   demo" if Controls.tap_word() != "" else "   demo — %s for title" % Controls.leave_name()
 	if _opponent_gone and _ended == "":
 		big = ""
-		small = "Opponent left — %s for title" % (Controls.tap_word() if Controls.tap_word() != "" else Controls.leave_name())
+		small = "%s — %s for title" % [Net.gone_why if Net.gone_why != "" else "Opponent left",
+				Controls.tap_word() if Controls.tap_word() != "" else Controls.leave_name()]
 	if _ended != "":
 		big = ""
 		small = _ended
+	if _notice != "" and Time.get_ticks_msec() - _notice_msec < NOTICE_MS:
+		var notice_size := maxi(20, int(13 * dp))
+		var at := Vector2(0, 14 + hud_size + notice_size * 2)
+		draw_string_outline(font, at, _notice, HORIZONTAL_ALIGNMENT_CENTER, view.x, notice_size, notice_size / 3, Color.BLACK)
+		draw_string(font, at, _notice, HORIZONTAL_ALIGNMENT_CENTER, view.x, notice_size, Color(1.0, 0.85, 0.4))
 	var big_size := maxi(72, int(40 * dp))
 	var small_size := maxi(24, int(16 * dp))
 	if big != "":
@@ -403,6 +415,11 @@ func _on_desynced(tick: int) -> void:
 
 func _on_opponent_left() -> void:
 	_opponent_gone = true
+
+
+func _on_notice(text: String) -> void:
+	_notice = text
+	_notice_msec = Time.get_ticks_msec()
 
 
 ## Every real match is kept: a bug report is a file, and it replays exactly. Up to the last

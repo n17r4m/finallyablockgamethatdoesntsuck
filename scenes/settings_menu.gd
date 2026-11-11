@@ -69,6 +69,7 @@ func _ready() -> void:
 	var first := _add_page("Display", _build_display)
 	_add_page("Sound", _build_sound)
 	_add_page("Cursor", _build_cursor)
+	_add_page("Online", _build_online)
 	# The same gestures either way, so name what this player has.
 	if Controls.touch_first:
 		_add_page("Touch", _build_touch)
@@ -185,6 +186,19 @@ func _build_cursor(page: Control) -> void:
 	_note(page, "Grab is experimental. Its cursor is one block: press on a block to pick it up, move to carry it along its row, and let go to drop it. On keys and gamepads, hold the swap button to grab and release it to let go.")
 	_note(page, "With a mouse, either cursor follows the pointer over the board, until you use a direction key or button. The swap cursor centres on it. With grab, you can also hold the swap button and carry the block with the pointer.")
 	_note(page, "The rules are the same either way, so you can play anyone. An online opponent sees a two-block cursor.")
+
+
+func _build_online(page: Control) -> void:
+	var edit := LineEdit.new()
+	edit.text = str(Config.get_value("net", "server"))
+	edit.placeholder_text = Net.server_url() if Net.server_url() != "" else "wss://example.com/ws"
+	edit.custom_minimum_size.x = 170.0
+	edit.size_flags_horizontal = SIZE_EXPAND_FILL
+	Controls.size_for_fingers(edit)
+	edit.text_changed.connect(func(text: String) -> void: Config.set_value("net", "server", text.strip_edges()))
+	_row(page, "Match server").add_child(edit)
+	_note(page, "Where Quick match and rooms play. Leave it empty for the game's own server%s." % (
+			", which for this page is the site it came from" if OS.has_feature("web") else ""))
 
 
 func _build_touch(page: Control) -> void:
