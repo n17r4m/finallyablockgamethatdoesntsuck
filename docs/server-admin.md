@@ -81,6 +81,7 @@ It shows, live:
   once the games in progress end.
 - **History:** players per minute over the last day, how matches ended, a histogram of input
   lateness, the last 50 matches with replays to download, bans, and a log of what the admin did.
+- **Auto, Dark or Light:** the button in the header picks the console's colours, remembered in that browser.
 
 Ping comes from WebSocket pings the server sends every 2 s. Lateness is how far behind the
 server's clock a player's input arrived: the numbers needed before the server can enforce a limit.
@@ -116,7 +117,6 @@ The console's lateness histogram and pings are how to see that.
 ## Not done yet
 
 - **Old replays and samples are never deleted.** Nothing prunes `/var/lib/fbg` yet.
-- **Auto, Dark or Light:** the button in the header picks the console's colours, remembered in that browser.
 - **The console has no live push.** It polls once a second, and the referee's boards ten times a
   second while watching. That's fine for one admin.
 - **Backups:** `sqlite3 /var/lib/fbg/fbg.db ".backup /somewhere/fbg.db"` works while it runs.
