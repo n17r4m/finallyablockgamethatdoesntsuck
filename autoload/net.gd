@@ -24,7 +24,7 @@ const SERVER_OPPONENT := -1 # remote_id while the opponent is behind the match s
 ## The public match server, for builds that aren't served by it. Empty: none yet, so native
 ## builds need [net] server in settings or --server. A web build served from the same host
 ## finds the server itself (see server_url).
-const PUBLIC_SERVER := ""
+const PUBLIC_SERVER := "wss://play.shesellsseashells.ca/ws"
 const ROOM_LETTERS := "ABCDEFGHJKMNPQRSTUVWXYZ23456789" # nothing to misread over a call
 
 var opponent_name := "" # through the match server; "" otherwise
