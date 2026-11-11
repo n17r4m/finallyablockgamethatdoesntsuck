@@ -12,9 +12,11 @@
   font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #141416; --panel: #1d1d20; --ink: #e9e9e6; --dim: #9a9a94; --line: #2e2e33;
+  :root:not([data-theme="light"]) { --bg: #141416; --panel: #1d1d20; --ink: #e9e9e6; --dim: #9a9a94; --line: #2e2e33;
           --accent: #6b9cff; --good: #4cc17f; --warn: #e0a84a; --bad: #ef6b6b; --gar: #6e6e78; }
 }
+:root[data-theme="dark"] { --bg: #141416; --panel: #1d1d20; --ink: #e9e9e6; --dim: #9a9a94; --line: #2e2e33;
+          --accent: #6b9cff; --good: #4cc17f; --warn: #e0a84a; --bad: #ef6b6b; --gar: #6e6e78; }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); }
 header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 12px 16px;
@@ -58,6 +60,47 @@ svg text { fill: var(--dim); font-size: 11px; }
 .bars { display: grid; grid-template-columns: max-content 1fr max-content; gap: 4px 8px; align-items: center; font-size: 13px; }
 .bar { height: 10px; background: var(--accent); border-radius: 3px; min-width: 2px; }
 a { color: var(--accent); }
+
+/* Where everyone is: one square per player, lit by where they are. */
+#map { transition: border-color .3s, box-shadow .3s; }
+#map.calling { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn), 0 0 24px color-mix(in srgb, var(--warn) 25%, transparent); }
+.lanes { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.lane { border: 1px dashed var(--line); border-radius: 8px; padding: 8px 10px 10px; min-height: 76px; }
+.lane h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--dim); display: flex; gap: 6px; }
+.lane h3 .n { color: var(--ink); }
+.lane.lit { border-style: solid; }
+.lane.waiting.lit { border-color: var(--warn); }
+.tiles { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+.tile { display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 11px; max-width: 120px; text-align: center; }
+.tile .warn { white-space: nowrap; }
+.tile .who { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+.sq { width: 18px; height: 18px; border-radius: 4px; background: var(--line); }
+.sq.new { background: color-mix(in srgb, var(--dim) 45%, transparent); }
+.sq.lobby { background: var(--accent); box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 50%, transparent); }
+.sq.wait { width: 26px; height: 26px; background: var(--warn); animation: beckon 1.6s ease-in-out infinite; }
+.sq.play { background: var(--good); box-shadow: 0 0 8px color-mix(in srgb, var(--good) 45%, transparent); }
+@keyframes beckon {
+  0%, 100% { box-shadow: 0 0 4px color-mix(in srgb, var(--warn) 50%, transparent); }
+  50% { box-shadow: 0 0 18px 4px color-mix(in srgb, var(--warn) 70%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) { .sq.wait { animation: none; box-shadow: 0 0 14px 2px color-mix(in srgb, var(--warn) 60%, transparent); } }
+.pair { display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 11px; padding: 4px 6px; border-radius: 6px;
+        border: 1px solid transparent; background: none; cursor: pointer; color: inherit; }
+.pair:hover { border-color: var(--accent); }
+.pair .duo { display: flex; gap: 3px; }
+.unlit { display: flex; gap: 6px; margin: 4px 0 2px; }
+.unlit .sq { opacity: .5; }
+
+/* The last 14 days, an hour a square. */
+.week { display: grid; grid-template-columns: max-content repeat(24, minmax(6px, 20px)); justify-content: start; gap: 3px; align-items: center; font-size: 11px; }
+.week .h { color: var(--dim); text-align: left; font-size: 10px; }
+.week .d { color: var(--dim); padding-right: 6px; white-space: nowrap; }
+.week .c { aspect-ratio: 1; border-radius: 3px; background: color-mix(in srgb, var(--line) 60%, transparent); max-width: 22px; }
+.week .c.off { background: none; outline: 1px dashed color-mix(in srgb, var(--line) 80%, transparent); outline-offset: -1px; }
+.week .c.waited { box-shadow: inset 0 0 0 2px var(--warn); }
+.week .c.now { outline: 2px solid var(--ink); outline-offset: -1px; }
+.legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--dim); margin-top: 10px; align-items: center; }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-right: 4px; }
 </style>
 </head>
 <body>
@@ -67,11 +110,30 @@ a { color: var(--accent); }
   <span id="counts" class="pill"></span>
   <span id="build" class="pill"></span>
   <span class="spacer"></span>
+  <button id="theme" title="Colours: follow the system, dark, or light">Auto</button>
   <button id="drain">Drain</button>
   <button id="restart" class="danger" title="Stop taking matches, and stop the server once the last one ends. systemd starts it again.">Drain &amp; restart</button>
   <button id="resume" hidden>Resume</button>
 </header>
 <main>
+  <section class="wide" id="map">
+    <h2>Where everyone is <span class="n" id="map-sum"></span></h2>
+    <div id="lanes"></div>
+  </section>
+
+  <section class="wide">
+    <h2>When people are on, last 14 days</h2>
+    <div id="week" class="week"></div>
+    <div class="legend">
+      <span><i style="background:color-mix(in srgb, var(--line) 60%, transparent)"></i>nobody</span>
+      <span><i style="background:var(--accent)"></i>online (brighter is more)</span>
+      <span><i style="background:var(--good)"></i>somebody played</span>
+      <span><i style="box-shadow:inset 0 0 0 2px var(--warn)"></i>someone waited</span>
+      <span><i style="outline:1px dashed var(--line);outline-offset:-1px"></i>server off</span>
+      <span id="week-peak"></span>
+    </div>
+  </section>
+
   <section class="wide">
     <h2>Say something to everyone</h2>
     <div class="row"><input id="notice" type="text" maxlength="200" placeholder="Shown to every connected player"><button id="send">Send</button></div>
@@ -189,6 +251,7 @@ async function refresh() {
   $("n-matches").textContent = s.matches.length;
   $("n-conns").textContent = s.conns.length;
   const byId = Object.fromEntries(s.conns.map((c) => [c.id, c]));
+  drawMap(s, byId);
 
   table($("matches"), ["Match", "Players", "Ping", "Age", "#Behind clock", "#Frontier gap", "#Worst late", "State", ""], s.matches.map((m) => {
     const behind = ms(m.clock - m.refereed);
@@ -209,6 +272,96 @@ async function refresh() {
       <td>${esc(c.place)}</td><td>${rtt(c.rtt_ms)}</td><td class="num">${ago(c.age_s)}</td>
       <td><button data-kick="${c.id}">Kick</button> <button class="danger" data-ban="${esc(c.addr)}" data-who="${esc(c.name)}">Ban</button></td></tr>`), "Nobody is connected.");
 }
+
+// One square per player, in a lane for where they are. Somebody waiting glows, and the
+// tab title says so, so a friend waiting in a room is hard to miss.
+function drawMap(s, byId) {
+  const fresh = s.conns.filter((c) => c.place === "new");
+  const menu = s.conns.filter((c) => c.place === "lobby");
+  const waiting = s.conns.filter((c) => c.place === "queue" || c.place.startsWith("room"));
+  const tip = (c) => esc(`${c.name || "(no name yet)"} · ${c.platform || "?"} · ${c.addr} · ${c.rtt_ms != null ? c.rtt_ms + " ms" : "no ping yet"} · on ${ago(c.age_s)}`);
+  const who = (c) => esc(c.name) || `<span class="dim">#${c.id}</span>`;
+  const tile = (c, cls, extra = "") =>
+    `<div class="tile" title="${tip(c)}"><div class="sq ${cls}"></div><div class="who">${who(c)}</div>${extra}</div>`;
+
+  $("map").classList.toggle("calling", waiting.length > 0);
+  document.title = waiting.length ? `● ${waiting.length} waiting · Block Server Admin` : "Block Server Admin";
+  $("map-sum").textContent = s.conns.length ? `${s.conns.length}` : "";
+
+  if (!s.conns.length) {
+    $("lanes").innerHTML = `<div class="unlit">${'<div class="sq"></div>'.repeat(8)}</div>
+      <div class="empty">Nobody's on right now. A square lights up here for each player who connects, and glows when someone is waiting for a game.</div>`;
+    return;
+  }
+  const lane = (cls, title, n, body, hint) =>
+    `<div class="lane ${cls}${n ? " lit" : ""}"><h3>${title} <span class="n">${n || ""}</span></h3>
+      <div class="tiles">${n ? body : `<span class="dim" style="font-size:12px">${hint}</span>`}</div></div>`;
+
+  const waitBody = waiting.map((c) => tile(c, "wait",
+    `<div class="warn">${c.place === "queue" ? "quick match" : esc(c.place)} · ${ago(c.here_s)}</div>`)).join("");
+  const playBody = s.matches.map((m) => {
+    const sq = (i) => `<div class="sq ${m.over ? "" : "play"}" title="${byId[m.conns[i]] ? tip(byId[m.conns[i]]) : esc(m.names[i])}"></div>`;
+    return `<button class="pair" data-watch="${m.id}" title="Watch match ${m.id}"><span class="duo">${sq(0)}${sq(1)}</span>
+      <span>${esc(m.names[0])} <span class="dim">v</span> ${esc(m.names[1])}</span><span class="dim">${m.over ? "finishing" : ago(m.age_s)}</span></button>`;
+  }).join("");
+  $("lanes").innerHTML = `<div class="lanes">
+    ${lane("waiting", "Waiting for a game", waiting.length, waitBody, "nobody waiting")}
+    ${lane("", "Playing", s.matches.length * 2, playBody, "no games")}
+    ${lane("", "In the menu", menu.length, menu.map((c) => tile(c, "lobby")).join(""), "nobody idle")}
+    ${fresh.length ? lane("", "Connecting", fresh.length, fresh.map((c) => tile(c, "new")).join(""), "") : ""}
+  </div>`;
+}
+
+// The last 14 days as hours: brightness is the most players online in that hour.
+async function drawWeek() {
+  const DAYS = 14;
+  let st;
+  try { st = await get(`/api/stats?hours=${DAYS * 24}`); } catch (e) {
+    $("week").innerHTML = `<div class="empty" style="grid-column:1/-1">${esc(e.message)}</div>`; return;
+  }
+  const hourStart = (d) => { const x = new Date(d); x.setMinutes(0, 0, 0); return x.getTime() / 1000; };
+  const peak = new Map(), played = new Map(), waited = new Map();
+  for (const [at, online, playing, waiting] of st.samples) {
+    const h = hourStart(at * 1000);
+    peak.set(h, Math.max(peak.get(h) ?? 0, online));
+    if (playing) played.set(h, true);
+    if (waiting) waited.set(h, true);
+  }
+  const top = Math.max(1, ...peak.values());
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const nowHour = hourStart(Date.now());
+  let html = `<span></span>` + Array.from({ length: 24 }, (_, h) => `<span class="h">${h % 6 ? "" : h}</span>`).join("");
+  for (let d = DAYS - 1; d >= 0; d--) {
+    const day = new Date(today); day.setDate(today.getDate() - d);
+    const label = d === 0 ? "today" : day.toLocaleDateString([], { weekday: "short", day: "numeric" });
+    html += `<span class="d">${label}</span>`;
+    for (let h = 0; h < 24; h++) {
+      const at = new Date(day); at.setHours(h);
+      const t = at.getTime() / 1000;
+      if (t > nowHour) { html += `<span></span>`; continue; }
+      const v = peak.get(t);
+      const now = t === nowHour ? " now" : "";
+      const stamp = at.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+      if (v == null) { html += `<span class="c off${now}" title="${stamp}: server off"></span>`; continue; }
+      const style = v ? `background:color-mix(in srgb, var(${played.get(t) ? "--good" : "--accent"}) ${Math.round(25 + 75 * v / top)}%, transparent)` : "";
+      const wait = waited.get(t) ? " waited" : "";
+      html += `<span class="c${now}${wait}" style="${style}" title="${stamp}: ${v ? `up to ${v} online${played.get(t) ? ", playing" : ""}${wait ? ", someone waited for a game" : ""}` : "nobody on"}"></span>`;
+    }
+  }
+  $("week").innerHTML = html;
+  $("week-peak").textContent = peak.size ? `busiest hour: ${top} online` : "";
+}
+
+// Colours: follow the system unless told otherwise. Remembered in this browser only.
+const THEMES = ["auto", "dark", "light"];
+function setTheme(t) {
+  if (t === "auto") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+  $("theme").textContent = t[0].toUpperCase() + t.slice(1);
+  try { localStorage.setItem("fbg-admin-theme", t); } catch (e) {}
+  refresh(); slow(); drawWeek(); // canvas and svg colours are read from the tokens
+}
+$("theme").onclick = () => setTheme(THEMES[(THEMES.indexOf($("theme").textContent.toLowerCase()) + 1) % 3]);
+try { const t = localStorage.getItem("fbg-admin-theme"); if (THEMES.includes(t) && t !== "auto") { document.documentElement.dataset.theme = t; $("theme").textContent = t[0].toUpperCase() + t.slice(1); } } catch (e) {}
 
 // The watched match, drawn from the referee's copy of the game.
 const CELL = 22;
@@ -336,7 +489,9 @@ $("unwatch").onclick = () => { watching = null; $("watch").hidden = true; };
 
 refresh();
 slow();
+drawWeek();
 setInterval(refresh, 1000);
+setInterval(drawWeek, 60000);
 setInterval(slow, 15000);
 setInterval(drawWatch, 100);
 </script>

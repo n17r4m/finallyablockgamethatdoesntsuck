@@ -210,8 +210,8 @@ pub fn replay_of(path: &Path, id: i64) -> rusqlite::Result<Option<String>> {
 
 #[derive(Serialize)]
 pub struct Stats {
-    /// (unix seconds, online, playing) once a minute, oldest first.
-    pub samples: Vec<(i64, i64, i64)>,
+    /// (unix seconds, online, playing, waiting) once a minute, oldest first.
+    pub samples: Vec<(i64, i64, i64, i64)>,
     /// How matches ended, most common first.
     pub reasons: Vec<(String, i64)>,
     pub matches: i64,
@@ -223,8 +223,8 @@ pub struct Stats {
 pub fn stats(path: &Path, since: i64) -> rusqlite::Result<Stats> {
     let c = reader(path)?;
     let samples = c
-        .prepare("SELECT at, online, playing FROM samples WHERE at >= ?1 ORDER BY at")?
-        .query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .prepare("SELECT at, online, playing, waiting FROM samples WHERE at >= ?1 ORDER BY at")?
+        .query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
         .collect::<Result<_, _>>()?;
     let reasons = c
         .prepare("SELECT coalesce(reason, 'playing'), count(*) FROM matches WHERE started >= ?1 GROUP BY 1 ORDER BY 2 DESC")?

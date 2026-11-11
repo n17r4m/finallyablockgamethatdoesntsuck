@@ -63,6 +63,13 @@ ssh -L 47111:127.0.0.1:47111 you@this-host     then open http://localhost:47111/
 ```
 
 It shows, live:
+- **Where everyone is:** a square per player, in a lane for where they are: waiting for a game,
+  playing (two squares per match, click to watch), in the menu, or still connecting. Somebody
+  waiting glows and says for how long, the panel lights up, and the tab title starts with
+  "● 1 waiting", so a friend sitting in a room is hard to miss from another tab.
+- **When people are on, last 14 days:** an hour a square. Brighter is more players online, green
+  means somebody played, an orange ring means someone waited for a game, and a dashed square
+  means the server wasn't running.
 - **Matches:** who's playing whom, their pings, how far the referee runs behind the clock, and
   the worst input lateness so far. Watch draws both boards from the referee's copy of the game.
   End stops a match as a draw.
@@ -109,6 +116,7 @@ The console's lateness histogram and pings are how to see that.
 ## Not done yet
 
 - **Old replays and samples are never deleted.** Nothing prunes `/var/lib/fbg` yet.
+- **Auto, Dark or Light:** the button in the header picks the console's colours, remembered in that browser.
 - **The console has no live push.** It polls once a second, and the referee's boards ten times a
   second while watching. That's fine for one admin.
 - **Backups:** `sqlite3 /var/lib/fbg/fbg.db ".backup /somewhere/fbg.db"` works while it runs.

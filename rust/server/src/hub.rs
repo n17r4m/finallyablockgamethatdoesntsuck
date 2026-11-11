@@ -91,6 +91,7 @@ pub struct ConnInfo {
     pub place: String, // "new", "lobby", "queue", "room CODE" or "match N"
     pub rtt_ms: Option<u32>,
     pub age_s: u64,
+    pub here_s: u64, // how long they've been where they are
 }
 
 #[derive(Serialize)]
@@ -148,6 +149,7 @@ enum Place {
 struct Conn {
     tx: mpsc::Sender<Vec<u8>>,
     place: Place,
+    placed: Instant,
     opened: Instant,
     window: Instant,
     messages: u32,
@@ -375,7 +377,7 @@ impl Hub {
                 let now = Instant::now();
                 self.conns.insert(
                     id,
-                    Conn { tx, place: Place::New, opened: now, window: now, messages: 0, addr, name: String::new(), platform: String::new(), rtt_ms: None },
+                    Conn { tx, place: Place::New, placed: now, opened: now, window: now, messages: 0, addr, name: String::new(), platform: String::new(), rtt_ms: None },
                 );
             }
             Event::Message(id, msg) => {
@@ -474,6 +476,9 @@ impl Hub {
 
     fn set_place(&mut self, id: u64, place: Place) {
         if let Some(c) = self.conns.get_mut(&id) {
+            if c.place != place {
+                c.placed = Instant::now();
+            }
             c.place = place;
         }
     }
@@ -771,6 +776,7 @@ impl Hub {
                 },
                 rtt_ms: c.rtt_ms,
                 age_s: c.opened.elapsed().as_secs(),
+                here_s: c.placed.elapsed().as_secs(),
             })
             .collect();
         conns.sort_by_key(|c| c.id);
