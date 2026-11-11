@@ -6,3 +6,4 @@ export_credentials.cfg
 /rust/target/
 /ext/bin/
 /.claude/
+deploy/out/

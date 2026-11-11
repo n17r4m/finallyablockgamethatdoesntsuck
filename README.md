@@ -5,6 +5,8 @@ Panel-de-Pon-style 1v1 versus, Godot 4.7, GDScript, rollback netcode. The game p
 ## Run
 - Editor: open `project.godot` with `../Godot/Godot_v4.7.2-stable_linux.x86_64`.
 - Two local clients: `tools/duo.sh` (host + join on 127.0.0.1).
+- Online: the title's Quick match plays whoever else is waiting on the match server, and Play a friend joins the room code typed next to it, or makes a room and copies an invite link if it's empty. The server is `[net] server` in settings (Settings, Online), or on the web the site the page came from. Host and Join are for a LAN, with no server.
+- Hosting the server and the web game on this machine, and its admin console: [docs/server-admin.md](docs/server-admin.md) (`tools/deploy.sh`).
 - Launch args (after `--`): `--host`, `--join=ADDR`, `--practice` (endless solo),
   `--cpu=NAME[:LEVEL]` (e.g. `--cpu=Architect:hard`), `--demo[=NAME[:LEVEL]]` (CPU vs CPU, loops).
 - Controls: keyboard (arrows/WASD, space/X swap, C/shift raise), gamepad (d-pad or left stick, A/B, shoulders), and
@@ -34,7 +36,8 @@ Panel-de-Pon-style 1v1 versus, Godot 4.7, GDScript, rollback netcode. The game p
   time sync keeps rollbacks even by slowing whichever side runs further ahead of the other's inputs.
 - `sim/replay.gd` — a whole game as data: seed, setup, inputs and state hashes. Verifies by re-simulating.
 - `rust/sim/` — the same rules in Rust, for the server and for faster clients. `board.rs` follows `sim_board.gd` function by function.
-- `rust/server/`, `net/server_link.gd` — the match server and the game's end of it: pairs players, relays inputs, referees on the real rules. See [docs/server-protocol.md](docs/server-protocol.md).
+- `rust/server/`, `net/server_link.gd` — the match server and the game's end of it: pairs players, relays inputs, referees on the real rules, keeps history in SQLite, and serves an admin console. See [docs/server-protocol.md](docs/server-protocol.md) and [docs/server-admin.md](docs/server-admin.md).
+- `deploy/` — the systemd unit and nginx site for running it here. Where the game is going next: [docs/game-modes.md](docs/game-modes.md).
 - `rust/godot/`, `ext/` — the Godot extension that exposes those rules as `RustSim`, which `sim/rust_state.gd` wraps for the game. `[sim] backend` in settings is `auto` or `gdscript`. Build it with `tools/build_rust_ext.sh`; see [docs/platforms.md](docs/platforms.md).
 - `ai/cpu_player.gd` — CPU opponents: stochastic plan search on a settled-board model; personalities × levels.
 - `view/board_view.gd` — **the 2D→3D cut-off** (below).
