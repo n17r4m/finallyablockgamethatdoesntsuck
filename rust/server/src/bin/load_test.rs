@@ -18,7 +18,7 @@ async fn play(url: String, room: String, seat: usize, replay: Arc<Replay>, secon
         return;
     };
     let (mut tx, mut rx) = socket.split();
-    let hello = ClientMsg::Hello { protocol: PROTOCOL, rules: RULES_VERSION, tick_hz: TICK_HZ };
+    let hello = ClientMsg::Hello { protocol: PROTOCOL, rules: RULES_VERSION, tick_hz: TICK_HZ, name: "load".into(), platform: "load_test".into() };
     let _ = tx.send(Message::binary(hello.encode())).await;
     let _ = tx.send(Message::binary(ClientMsg::Room(room).encode())).await;
     // Waits for the start, then listens while it plays.

@@ -38,6 +38,7 @@ func _init() -> void:
 	var code := "T%d" % (randi() % 1000000)
 	for c in 2:
 		var link := ServerLink.new()
+		link.player_name = "Tester %d" % c
 		if link.open(_url) != OK:
 			_fail("can't open a socket")
 			_finish()
@@ -119,6 +120,9 @@ func _deliver(c: int) -> void:
 func _check() -> void:
 	var a := _sessions[0]
 	var b := _sessions[1]
+	for c in 2:
+		if _links[c].opponent_name != "Tester %d" % (1 - c):
+			_fail("link %d was told its opponent is %s" % [c, _links[c].opponent_name])
 	if (a.state is RustState) == (b.state is RustState):
 		_fail("this test wants one Rust player and one GDScript player")
 	if _desyncs != 0:
@@ -173,3 +177,27 @@ func _test_codec() -> void:
 	link.decode(huge)
 	if not got.is_empty():
 		_fail("an input claiming too many changes was accepted")
+
+	# Start carries the opponent's name, and a notice is text: both a length byte then UTF-8.
+	var start := StreamPeerBuffer.new()
+	start.put_u8(ServerLink.START)
+	start.put_64(7)
+	start.put_64(-3)
+	start.put_u8(1)
+	var name := "Zoë".to_utf8_buffer()
+	start.put_u8(name.size())
+	start.put_data(name)
+	link.decode(start.data_array)
+	if got != [[7, -3, 1]] or link.opponent_name != "Zoë":
+		_fail("a start decoded wrong: %s, %s" % [got, link.opponent_name])
+	got.clear()
+	link.decode(start.data_array.slice(0, start.data_array.size() - 1))
+	if not got.is_empty():
+		_fail("a cut-off start was accepted")
+	var notices: Array = []
+	link.notice.connect(func(t: String) -> void: notices.append(t))
+	var note := PackedByteArray([ServerLink.NOTICE, 2]) + "hi".to_utf8_buffer()
+	link.decode(note)
+	link.decode(note.slice(0, 3))
+	if notices != ["hi"]:
+		_fail("notices decoded wrong: %s" % [notices])

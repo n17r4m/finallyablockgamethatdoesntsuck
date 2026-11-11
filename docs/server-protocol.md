@@ -8,7 +8,12 @@ Run it with `cargo run --release -p fbg-server -- --listen 0.0.0.0:47110 --repla
 `wss://`, so in production it belongs behind a reverse proxy that handles TLS.
 
 A game joins with `--server=ws://HOST:47110 [--room=CODE]`, or on the web with
-`?server=wss://HOST&room=CODE` in the page address. No room means quick match.
+`?server=wss://HOST&room=CODE` in the page address. No room means quick match. The title's
+Quick match and Play a friend buttons use `[net] server` from settings, or on the web the
+page's own host at `/ws`. A web page opened with only `?room=CODE` joins that room there,
+which is what an invite link is.
+
+Running it for real, with its admin console: [server-admin.md](server-admin.md).
 
 ## What it decides
 
@@ -34,6 +39,7 @@ exists: `net/server_link.gd` turns its packets to and from these bytes.
 | Wrong state | A player's hash differs from the referee's | The other player wins, or a draw if both differ |
 | Bad input | An impossible message: bits outside the input mask, a change past its own frontier, a frontier over 2 s past the server's clock, or a hash that can't exist | The other player wins |
 | Too long | Two hours of game | A draw |
+| Ended | Whoever runs the server ended it from the admin console | A draw |
 
 A match that falls behind the server's clock is not stalled. Clients drop ticks after a hitch
 and never bank them, so an honest match can run late for good. Only a frontier that has stopped
@@ -49,7 +55,7 @@ Anything malformed closes the connection. So does anything before a hello.
 
 | Byte | Message | Then |
 |---|---|---|
-| 1 | Hello | protocol u16, rules u16, tick rate u16 |
+| 1 | Hello | protocol u16, rules u16, tick rate u16, name (text, up to 24 bytes), platform (text, up to 16 bytes of letters, digits, `.` and `_`) |
 | 2 | Quick match | |
 | 3 | Room | length u8 (1-16), code (ASCII letters and digits, case ignored) |
 | 4 | Input | see below |
@@ -63,11 +69,16 @@ Anything malformed closes the connection. So does anything before a hello.
 | 64 | Welcome | |
 | 65 | Refused | length u8, reason (UTF-8). The connection then closes |
 | 66 | Waiting | |
-| 67 | Start | match id u64, seed i64, seat u8 |
+| 67 | Start | match id u64, seed i64, seat u8, the opponent's name (text) |
 | 68 | Input | see below, the other player's |
 | 69 | Result | winner u8 (0, 1, or 2 for a draw), reason u8 (the table above, in order), tick i64 |
 | 70 | Pong | the 8 bytes from the ping |
 | 71 | Opponent left | The player is back in the lobby |
+| 72 | Notice | text, up to 200 bytes: a message from whoever runs the server, to show the player |
+
+**Text** is a length u8 then that many bytes of UTF-8. The server cuts names to 24 bytes on a
+character boundary, drops control characters, and calls an empty name "Player". A protocol 1
+hello (no name or platform) still decodes, so an old game is told to update rather than dropped.
 
 **Input**, the same both ways: frontier i64, acknowledged i64, sender's tick i64, advantage i64,
 change count u16 (up to 256), then for each change tick i64 and mask i32, then hash count u8 (up
@@ -103,5 +114,5 @@ warn about it. All matches share one task, which is the limit to lift first.
 - **It doesn't stop a player using a bot,** or reading its own game's memory. It proves what
   happened under the rules, not who pressed the buttons.
 - **There are no accounts, ranks or matchmaking by skill,** and a room code is only as private
-  as whoever you tell it to.
+  as whoever you tell it to. Names are whatever the player typed.
 - **Replays pile up** in `--replays` with nothing clearing them.

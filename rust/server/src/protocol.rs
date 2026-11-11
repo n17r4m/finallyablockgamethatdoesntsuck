@@ -2,11 +2,13 @@
 //! `net/server_link.gd` is the other end. `decode` treats its input as hostile: anything a
 //! client sends comes back as a message or None, never a panic or an oversized allocation.
 
-pub const PROTOCOL: u16 = 1;
+pub const PROTOCOL: u16 = 2;
 pub const MAX_CHANGES: usize = 256;
 pub const MAX_CHECKS: usize = 16;
 pub const MAX_ROOM: usize = 16;
 pub const MAX_REASON: usize = 200;
+pub const MAX_NAME: usize = 24; // bytes of UTF-8
+pub const MAX_PLATFORM: usize = 16;
 
 /// One player's input so far. The same shape travels both ways through the server.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -21,7 +23,7 @@ pub struct InputMsg {
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ClientMsg {
-    Hello { protocol: u16, rules: u16, tick_hz: u16 },
+    Hello { protocol: u16, rules: u16, tick_hz: u16, name: String, platform: String },
     Queue,
     Room(String),
     Input(InputMsg),
@@ -38,6 +40,7 @@ pub enum EndReason {
     WrongState = 3,
     BadInput = 4,
     TooLong = 5,
+    Ended = 6, // by whoever runs the server
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -45,11 +48,12 @@ pub enum ServerMsg {
     Welcome,
     Refused(String),
     Waiting,
-    Start { match_id: u64, seed: i64, seat: u8 },
+    Start { match_id: u64, seed: i64, seat: u8, opponent: String },
     Input(InputMsg),
     Result { winner: u8, reason: EndReason, tick: i64 },
     Pong(u64),
     OpponentLeft,
+    Notice(String), // from whoever runs the server, for the player to read
 }
 
 struct Reader<'a> {
@@ -77,9 +81,34 @@ impl Reader<'_> {
     fn i64(&mut self) -> Option<i64> {
         self.take(8).and_then(|v| v.try_into().ok()).map(i64::from_le_bytes)
     }
+    /// A length byte, then that many bytes of text. None if it's longer than `max`.
+    fn text(&mut self, max: usize) -> Option<&str> {
+        let n = self.u8()? as usize;
+        if n > max {
+            return None;
+        }
+        std::str::from_utf8(self.take(n)?).ok()
+    }
     fn done(&self) -> bool {
         self.b.is_empty()
     }
+}
+
+/// A length byte and the text, cut to `max` bytes without splitting a character.
+fn write_text(out: &mut Vec<u8>, text: &str, max: usize) {
+    let mut end = text.len().min(max);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    out.push(end as u8);
+    out.extend_from_slice(&text.as_bytes()[..end]);
+}
+
+/// A name as the server keeps it: no control characters, no padding, never empty.
+pub fn clean_name(name: &str) -> String {
+    let kept: String = name.chars().filter(|c| !c.is_control()).collect();
+    let kept = kept.trim();
+    if kept.is_empty() { "Player".into() } else { kept.into() }
 }
 
 fn read_input(r: &mut Reader) -> Option<InputMsg> {
@@ -123,7 +152,19 @@ impl ClientMsg {
     pub fn decode(bytes: &[u8]) -> Option<ClientMsg> {
         let mut r = Reader { b: bytes };
         let msg = match r.u8()? {
-            1 => ClientMsg::Hello { protocol: r.u16()?, rules: r.u16()?, tick_hz: r.u16()? },
+            1 => {
+                let (protocol, rules, tick_hz) = (r.u16()?, r.u16()?, r.u16()?);
+                // Older games stop here, and still deserve to be told to update.
+                if r.done() {
+                    return Some(ClientMsg::Hello { protocol, rules, tick_hz, name: String::new(), platform: String::new() });
+                }
+                let name = r.text(MAX_NAME)?.to_owned();
+                let platform = r.text(MAX_PLATFORM)?;
+                if !platform.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'_') {
+                    return None;
+                }
+                ClientMsg::Hello { protocol, rules, tick_hz, name, platform: platform.to_owned() }
+            }
             2 => ClientMsg::Queue,
             3 => {
                 let n = r.u8()? as usize;
@@ -147,11 +188,13 @@ impl ClientMsg {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
-            ClientMsg::Hello { protocol, rules, tick_hz } => {
+            ClientMsg::Hello { protocol, rules, tick_hz, name, platform } => {
                 out.push(1);
                 for v in [protocol, rules, tick_hz] {
                     out.extend_from_slice(&v.to_le_bytes());
                 }
+                write_text(&mut out, name, MAX_NAME);
+                write_text(&mut out, platform, MAX_PLATFORM);
             }
             ClientMsg::Queue => out.push(2),
             ClientMsg::Room(code) => {
@@ -180,16 +223,15 @@ impl ServerMsg {
             ServerMsg::Welcome => out.push(64),
             ServerMsg::Refused(why) => {
                 out.push(65);
-                let cut = &why.as_bytes()[..why.len().min(MAX_REASON)];
-                out.push(cut.len() as u8);
-                out.extend_from_slice(cut);
+                write_text(&mut out, why, MAX_REASON);
             }
             ServerMsg::Waiting => out.push(66),
-            ServerMsg::Start { match_id, seed, seat } => {
+            ServerMsg::Start { match_id, seed, seat, opponent } => {
                 out.push(67);
                 out.extend_from_slice(&match_id.to_le_bytes());
                 out.extend_from_slice(&seed.to_le_bytes());
                 out.push(*seat);
+                write_text(&mut out, opponent, MAX_NAME);
             }
             ServerMsg::Input(m) => {
                 out.push(68);
@@ -206,6 +248,10 @@ impl ServerMsg {
                 out.extend_from_slice(&t.to_le_bytes());
             }
             ServerMsg::OpponentLeft => out.push(71),
+            ServerMsg::Notice(text) => {
+                out.push(72);
+                write_text(&mut out, text, MAX_REASON);
+            }
         }
         out
     }
@@ -220,7 +266,7 @@ impl ServerMsg {
                 ServerMsg::Refused(String::from_utf8_lossy(r.take(n)?).into_owned())
             }
             66 => ServerMsg::Waiting,
-            67 => ServerMsg::Start { match_id: r.i64()? as u64, seed: r.i64()?, seat: r.u8()? },
+            67 => ServerMsg::Start { match_id: r.i64()? as u64, seed: r.i64()?, seat: r.u8()?, opponent: r.text(MAX_NAME)?.to_owned() },
             68 => ServerMsg::Input(read_input(&mut r)?),
             69 => {
                 let winner = r.u8()?;
@@ -231,12 +277,14 @@ impl ServerMsg {
                     3 => EndReason::WrongState,
                     4 => EndReason::BadInput,
                     5 => EndReason::TooLong,
+                    6 => EndReason::Ended,
                     _ => return None,
                 };
                 ServerMsg::Result { winner, reason, tick: r.i64()? }
             }
             70 => ServerMsg::Pong(r.i64()? as u64),
             71 => ServerMsg::OpponentLeft,
+            72 => ServerMsg::Notice(r.text(MAX_REASON)?.to_owned()),
             _ => return None,
         };
         r.done().then_some(msg)
