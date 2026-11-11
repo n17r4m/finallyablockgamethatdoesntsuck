@@ -5,10 +5,12 @@
 pub mod board;
 pub mod consts;
 pub mod replay;
+pub mod rules;
 pub mod state;
 
 pub use board::Board;
 pub use replay::Replay;
+pub use rules::Rules;
 pub use state::State;
 
 use sha2::{Digest, Sha256};

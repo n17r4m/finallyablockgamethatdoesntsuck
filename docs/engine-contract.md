@@ -142,6 +142,58 @@ one must be on it.
 The trailer catches damage, not forgery, because anyone can recompute it. What stops a forged
 game is re-simulating it.
 
+## Ruleset bytes
+
+Every number a match plays by, apart from the shape of the well and the tick rate:
+`sim/sim_rules.gd` and `rust/sim/src/rules.rs`. `tests/golden/standard.rules` is the standard
+ruleset, and both copies must write exactly those bytes. A ruleset's **fingerprint** is the hash
+of its bytes, the same function as the state hash. Not used by the sim yet: today's constants
+still drive it, and the standard ruleset is those constants as data.
+
+| Field | Encoding |
+|---|---|
+| magic | `FBRU` |
+| layout | u8, 1 |
+| colours | u8 |
+| flags | u8: bit 0 manual raise, bit 1 combos send garbage, bit 2 chains send garbage; nothing else set |
+| timings | 20 × i32, in this order: swap, hover, fall, land, flash, pop, reveal, shell_pop, garbage_hang, repeat_delay, repeat_rate, time_slow, time_ramp, row_units, raise_speed, stop, countdown, health, garbage_delay, garbage_gap |
+| rise | curve: rise per tick against the board's age |
+| chain_rows | curve: full-width garbage rows a chain sends when it ends, against its length |
+| combo_from | u8: the smallest clear that sends garbage |
+| combo | u8 entry count, then per entry a u8 slab count and that many u8 widths. Entry k is for a clear of combo_from + k; the last is for every bigger clear |
+
+A **curve** is u8 fill (0 linear, 1 step), u8 extend (0 or 1), u8 point count, then that many
+(i32 x, i32 y), x strictly increasing. Its value at x:
+
+- at or before the first point, or with one point: the first y
+- between two points: linear `ya + (yb - ya) * (x - xa) / (xb - xa)`, or step `ya`
+- after the last point without extend: the last y; with extend, following the last two points:
+  linear `yb + (x - xb) * dy / dx`, step `yb + (x - xb) / dx * dy`
+
+Integer division rounds toward zero. The sim reads `rise` held to 0..FOREVER and `chain_rows`
+held to 0..12 (the hidden rows).
+
+### Limits
+
+Each limit is there because something breaks without it. FOREVER is the longest game a replay
+may hold (`MAX_TICKS`, 5,184,000 ticks); a longer time can't be told from forever.
+
+| Field | Range | Because |
+|---|---|---|
+| colours | 1 to 6 | cell value 7 is garbage |
+| swap, hover, fall, land, flash, garbage_hang | 1 to FOREVER | a cell's timer counts down to exactly 0, so it must start above it |
+| pop, reveal, shell_pop | 1 to 227 | their sum over up to 144 cells shares a 32-bit cell with another timer, 16 bits each |
+| repeat_rate, row_units | 1 to FOREVER | each divides |
+| time_slow | 1 to 16 | at 0 a crack never ends; 16 is full speed |
+| everything else | 0 to FOREVER | |
+| rise points | x 0 to FOREVER, y 0 to FOREVER | |
+| chain_rows points | x 1 to FOREVER, y 0 to 12 | |
+| curves | 1 to 255 points, at least 2 to extend | a byte counts them |
+| combo_from | 3 or more | the smallest clear |
+| combo | 1 to 255 entries, each 0 to 255 slabs, each 1 to 6 wide | a byte counts them; a slab fits the well |
+
+Decoding refuses anything out of range, any other layout, and trailing bytes.
+
 ## Verifying a replay
 
 1. Refuse the file if its trailer, layout or limits are wrong.

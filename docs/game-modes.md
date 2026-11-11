@@ -1,7 +1,7 @@
 # Game modes
 
 Where the game is going past 1v1, and the order it gets built in. Decided 2026-11-10.
-Nothing below step 0 is built yet.
+Step 0 is built; step 1 is under way.
 
 ## The layers
 
@@ -36,9 +36,18 @@ overrides the automatic one. Garbage can go to a teammate.
 variable, which nothing is yet: width 6 is in the touch target encoding and every per-cell
 array. It comes after the scalar ruleset.
 
-**A custom ruleset starts as scalars:** timings, speeds, colours (4 to 6), garbage tables and
-toggles, each with limits the sim enforces itself, so a custom game can't make the referee's job
-unbounded.
+**A custom ruleset starts as scalars and curves** (decided 2026-11-11): timings, speeds, colours,
+garbage tables and toggles. Zero, one or infinity: no number exists because it looked about right.
+Every limit the sim enforces (it does, so a custom game can't make the referee's job unbounded) is
+a limit of the encoding or of the referee's cost, and it's written down as that. Anything that
+varies with something else (raise speed over time, garbage per combo size, garbage per chain
+length) is a curve, stored as integer points with integer interpolation, so a later editor can
+draw it. Today's tables are those curves' defaults.
+
+**Six colours, six pieces.** The colour count is a ruleset number like any other; the default
+stays 5. The sixth colour gets art, and each colour gets a chess piece (pawn, knight, bishop,
+rook, queen, king) as a shape for colour-blind play. More than six colours needs more pieces and
+moves the garbage cell value off 7.
 
 **Battle royale gets its own coupling.** Full rollback over every board works up to about six
 players. Past that, each client owns its board, garbage between boards becomes server-timestamped
@@ -51,7 +60,9 @@ inputs plus an incoming garbage stream, which coupled modes feed from inside the
 0. **A dedicated server people can actually reach**, with an admin console (see
    [server-admin.md](server-admin.md)). Today's 1v1, on this host, until about 30 active players.
 1. **Ruleset as data**, in GDScript and Rust, with replay format 2 carrying it. The default
-   ruleset plays today's game exactly.
+   ruleset plays today's game exactly. Done so far: the `Rules` data, its bytes and fingerprint
+   (`sim/sim_rules.gd`, `rust/sim/src/rules.rs`, the engine contract). Next: the sim reads it
+   instead of `SimConst`, then replays and the protocol carry it, then a Rules page.
 2. **N boards, teams and routing** in the sim. The P1/P2 mirror fuzz widens to every seat order.
 3. **N-seat `RollbackSession`**, including several local seats on one device.
 4. **Server rooms** with a host, seats, teams and a validated ruleset.
