@@ -23,8 +23,9 @@ Only nginx faces the internet. The server and its console listen on localhost.
 1. Point the domain's DNS at this machine, and forward ports 80 and 443 on the router to it.
 2. `tools/deploy.sh build`, as yourself. It builds the server in release and exports the web
    game into `deploy/out`.
-3. `sudo tools/deploy.sh install DOMAIN`. It installs `/usr/local/bin/fbg-server`, the systemd
-   unit `deploy/fbg-server.service`, the web files, and an nginx site from `deploy/nginx-site.conf`.
+3. `sudo tools/deploy.sh install DOMAIN`. It hands `/opt/fbg` and `/var/www/fbg` to you, puts
+   the server and the web files in them, and installs the systemd unit
+   `deploy/fbg-server.service` and an nginx site from `deploy/nginx-site.conf`.
 4. `sudo certbot --nginx -d DOMAIN`. A page on https can only open `wss://`, so web players need this.
 5. Open `https://DOMAIN/`, press Play a friend, and send the link it copies.
 
@@ -38,9 +39,14 @@ else, and systemd starts it again whenever it stops.
 
 ```
 tools/deploy.sh build
-sudo tools/deploy.sh update     # swaps the binary and web files; running games aren't touched
+tools/deploy.sh update          # swaps the binary and web files; running games aren't touched
 tools/deploy.sh restart         # or "Drain & restart" in the console
 ```
+
+None of that needs sudo: `/opt/fbg` and `/var/www/fbg` belong to the deploying account, and the
+server only reads them, as its own user. Anything running as that account can replace the
+server, but not reach root through it. A change to the systemd unit, nginx or the certificate
+still needs `sudo tools/deploy.sh install DOMAIN` again, which is safe to rerun.
 
 A restart drains first: the server stops starting matches, tells everyone in a game it'll
 restart after it, refuses rematches, and stops once the last game ends. systemd starts the new

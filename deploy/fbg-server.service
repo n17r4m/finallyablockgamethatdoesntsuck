@@ -7,7 +7,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/fbg-server --listen 127.0.0.1:47110 --admin 127.0.0.1:47111 --trust-proxy --db /var/lib/fbg/fbg.db --replays /var/lib/fbg/replays
+ExecStart=/opt/fbg/fbg-server --listen 127.0.0.1:47110 --admin 127.0.0.1:47111 --trust-proxy --db /var/lib/fbg/fbg.db --replays /var/lib/fbg/replays
 Restart=always
 RestartSec=1
 # A user that exists only while the service runs, owning /var/lib/fbg and nothing else.

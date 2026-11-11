@@ -1,30 +1,36 @@
 #!/usr/bin/env bash
 # Puts the match server and the web game on this machine. See docs/server-admin.md.
 #
-#   tools/deploy.sh build                 release server + web export, into deploy/out (as you)
-#   sudo tools/deploy.sh install DOMAIN   first time: server, systemd unit, web files, nginx site
-#   sudo tools/deploy.sh update           later: new server binary and web files, nothing else
+#   tools/deploy.sh build                 release server + web export, into deploy/out
+#   sudo tools/deploy.sh install DOMAIN   once: hands /opt/fbg and /var/www/fbg to you, then
+#                                         the server, systemd unit, web files and nginx site
+#   tools/deploy.sh update                new server binary and web files, no sudo needed
 #   tools/deploy.sh restart               ask the running server to drain and restart onto it
 #   tools/deploy.sh console               print how to reach the admin console
 set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT=deploy/out
-BIN=/usr/local/bin/fbg-server
+APP=/opt/fbg
+BIN=$APP/fbg-server
 WEB=/var/www/fbg
 SITE=/etc/nginx/sites-available/fbg
 ADMIN=http://127.0.0.1:47111
 GODOT="${GODOT:-../Godot/Godot_v4.7.2-stable_linux.x86_64}"
 
+need_built() {
+	[ -x "$OUT/fbg-server" ] && [ -f "$OUT/web/index.html" ] || { echo "nothing built: run tools/deploy.sh build first, without sudo" >&2; exit 1; }
+}
+
 need_root() {
 	[ "$(id -u)" -eq 0 ] || { echo "run this one with sudo" >&2; exit 1; }
-	[ -x "$OUT/fbg-server" ] && [ -f "$OUT/web/index.html" ] || { echo "nothing built: run tools/deploy.sh build first, without sudo" >&2; exit 1; }
+	[ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] || { echo "run it with sudo from your own account, which will own the deploy folders" >&2; exit 1; }
+	need_built
 }
 
 install_files() {
 	# The running server keeps the old binary open; the new one takes over on its next start.
 	install -m 755 "$OUT/fbg-server" "$BIN.new"
 	mv -f "$BIN.new" "$BIN"
-	mkdir -p "$WEB"
 	rsync -a --delete "$OUT/web/" "$WEB/"
 	echo "installed $BIN and $WEB"
 }
@@ -43,11 +49,18 @@ build)
 install)
 	need_root
 	domain="${2:?usage: sudo tools/deploy.sh install DOMAIN}"
-	install_files
+	# Yours from now on, so updates need no sudo. The server only reads them, as its own user.
+	install -d -m 755 -o "$SUDO_USER" -g "$SUDO_USER" "$APP" "$WEB"
+	sudo -u "$SUDO_USER" "$0" update --files-only
 	install -m 644 deploy/fbg-server.service /etc/systemd/system/fbg-server.service
 	systemctl daemon-reload
-	systemctl enable --now fbg-server
-	sed "s/DOMAIN/$domain/" deploy/nginx-site.conf > "$SITE"
+	systemctl enable --now fbg-server # a changed unit applies at the next restart (tools/deploy.sh restart)
+	# certbot adds https to this file, so a rerun leaves it alone. Delete it to start over.
+	if [ -e "$SITE" ]; then
+		echo "kept $SITE as it is"
+	else
+		sed "s/DOMAIN/$domain/" deploy/nginx-site.conf > "$SITE"
+	fi
 	ln -sf "$SITE" /etc/nginx/sites-enabled/fbg
 	nginx -t
 	systemctl reload nginx
@@ -56,12 +69,13 @@ install)
 	echo "  sudo certbot --nginx -d $domain"
 	;;
 update)
-	need_root
+	[ "$(id -u)" -ne 0 ] || { echo "update as yourself, not root" >&2; exit 1; }
+	need_built
+	[ -w "$APP" ] && [ -w "$WEB" ] || { echo "$APP or $WEB isn't yours: run sudo tools/deploy.sh install DOMAIN once" >&2; exit 1; }
 	install_files
+	[ "${2:-}" = "--files-only" ] && exit 0
 	if ! cmp -s deploy/fbg-server.service /etc/systemd/system/fbg-server.service; then
-		install -m 644 deploy/fbg-server.service /etc/systemd/system/fbg-server.service
-		systemctl daemon-reload
-		echo "the systemd unit changed: it applies on the next restart"
+		echo "deploy/fbg-server.service differs from the installed unit: rerun sudo tools/deploy.sh install DOMAIN to apply it"
 	fi
 	echo "Web players get the new page on reload. For the server: tools/deploy.sh restart"
 	;;
