@@ -9,6 +9,7 @@ signal opponent_joined
 signal opponent_left
 signal match_started
 signal packet(pkt: Variant)
+signal notice(text: String) # from whoever runs the match server
 
 var hosting := false
 var remote_id := 0
@@ -20,6 +21,15 @@ var cpu_level := "normal"
 var demo := false # CPU plays your board too (attract mode / footage)
 
 const SERVER_OPPONENT := -1 # remote_id while the opponent is behind the match server
+## The public match server, for builds that aren't served by it. Empty: none yet, so native
+## builds need [net] server in settings or --server. A web build served from the same host
+## finds the server itself (see server_url).
+const PUBLIC_SERVER := ""
+const ROOM_LETTERS := "ABCDEFGHJKMNPQRSTUVWXYZ23456789" # nothing to misread over a call
+
+var opponent_name := "" # through the match server; "" otherwise
+## Why the opponent is gone, when it's more than leaving: the match screen shows it.
+var gone_why := ""
 
 var _ping_t := 0.0
 var _self_ready := false # rematch handshake (host side)
@@ -76,10 +86,49 @@ func join(address: String, port: int) -> Error:
 	return OK
 
 
+## Where the match server is: settings first, then the page's own host on the web, where
+## nginx passes /ws to the server, then the built-in one. "" if there's none.
+func server_url() -> String:
+	var configured: String = str(Config.get_value("net", "server")).strip_edges()
+	if configured != "":
+		return configured
+	if OS.has_feature("web"):
+		var loc: Variant = JavaScriptBridge.eval("window.location.protocol + '//' + window.location.host")
+		if loc is String and (loc as String).begins_with("http"):
+			return (loc as String).replace("https://", "wss://").replace("http://", "ws://") + "/ws"
+	return PUBLIC_SERVER
+
+
+## A link that opens the web game straight into this room, on the same server.
+func invite_link(room_code: String) -> String:
+	var url := server_url()
+	if url == "":
+		return ""
+	var page := url.replace("wss://", "https://").replace("ws://", "http://").trim_suffix("/ws")
+	return "%s/?room=%s" % [page, room_code]
+
+
+static func new_room_code() -> String:
+	var code := ""
+	for i in 4:
+		code += ROOM_LETTERS[randi() % ROOM_LETTERS.length()]
+	return code
+
+
+## Online through the public match server: quick match, or a room with a friend.
+func play_online(room_code := "") -> Error:
+	var url := server_url()
+	if url == "":
+		status.emit("No match server set: add one under Settings")
+		return ERR_UNCONFIGURED
+	return connect_server(url, room_code)
+
+
 ## Through the match server. An empty room means quick match against whoever's waiting.
 func connect_server(url: String, room_code := "") -> Error:
 	leave()
 	var link := ServerLink.new()
+	link.player_name = str(Config.get_value("player", "name"))
 	var err := link.open(url)
 	if err != OK:
 		status.emit("Can't reach the server (%s)" % error_string(err))
@@ -94,7 +143,12 @@ func connect_server(url: String, room_code := "") -> Error:
 		leave()
 		status.emit(why))
 	link.waiting.connect(func() -> void:
-		status.emit("Waiting for an opponent…" if room_code == "" else "Waiting in room %s…" % room_code))
+		if room_code == "":
+			status.emit("Waiting for an opponent…")
+		else:
+			var link_text := invite_link(room_code)
+			status.emit("Room %s: waiting for your friend.%s" % [room_code,
+					"\nInvite link (copied if you made the room): " + link_text if link_text != "" else ""]))
 	link.started.connect(_on_server_start)
 	link.input.connect(func(pkt: Dictionary) -> void: packet.emit(pkt))
 	link.finished.connect(_on_server_result)
@@ -102,6 +156,9 @@ func connect_server(url: String, room_code := "") -> Error:
 	link.opponent_left.connect(func() -> void:
 		status.emit("Opponent left")
 		opponent_left.emit())
+	link.notice.connect(func(text: String) -> void:
+		status.emit(text)
+		notice.emit(text))
 	link.closed.connect(_on_server_disconnected)
 	status.emit("Connecting to the server…")
 	return OK
@@ -117,6 +174,8 @@ func leave() -> void:
 	multiplayer.multiplayer_peer = null
 	hosting = false
 	remote_id = 0
+	opponent_name = ""
+	gone_why = ""
 	rtt_ms = 0.0
 	_self_ready = false
 	_peer_ready = false
@@ -160,6 +219,7 @@ func start_match() -> void:
 		return
 	match_seed = randi()
 	local_idx = 0
+	gone_why = ""
 	_start.rpc_id(remote_id, match_seed)
 	await get_tree().create_timer(rtt_ms / 2000.0).timeout
 	match_started.emit()
@@ -186,6 +246,8 @@ func _process(delta: float) -> void:
 
 func _on_server_start(_match_id: int, game_seed: int, seat: int) -> void:
 	remote_id = SERVER_OPPONENT
+	opponent_name = _link.opponent_name if _link else ""
+	gone_why = ""
 	match_seed = game_seed
 	local_idx = seat
 	match_started.emit()
@@ -199,10 +261,15 @@ func _on_server_result(winner: int, reason: int, _tick: int) -> void:
 	var i_won := winner == local_idx
 	match reason:
 		ServerLink.STALLED:
-			status.emit("Opponent stopped responding" if i_won else "You stopped responding")
+			gone_why = "Opponent stopped responding" if i_won else "You stopped responding"
 		ServerLink.WRONG_STATE, ServerLink.BAD_INPUT:
-			status.emit("Opponent's game disagreed with the referee" if i_won else "Your game disagreed with the referee")
+			gone_why = "Opponent's game disagreed with the referee" if i_won else "Your game disagreed with the referee"
+		ServerLink.ENDED:
+			gone_why = "The server ended the match"
+		ServerLink.TOO_LONG:
+			gone_why = "Out of time: a draw"
 	if reason != ServerLink.LEFT:
+		status.emit(gone_why)
 		opponent_left.emit()
 
 
@@ -235,13 +302,15 @@ func _on_connection_failed() -> void:
 func _on_server_disconnected() -> void:
 	var was := "Server" if _link else "Host"
 	leave()
-	status.emit("%s disconnected" % was)
+	gone_why = "%s disconnected" % was
+	status.emit(gone_why)
 	opponent_left.emit()
 
 
 @rpc("authority", "call_remote", "reliable")
 func _start(game_seed: int) -> void:
 	remote_id = multiplayer.get_remote_sender_id()
+	gone_why = ""
 	match_seed = game_seed
 	local_idx = 1
 	match_started.emit()

@@ -12,12 +12,18 @@ const H := SimConst.H
 const SHAKE_HZ := 9.0
 const WELL_COLOR := Color(0.07, 0.07, 0.11)
 const BULLET_COLOR := Color(0.05, 0.11, 0.26)
+const HELD_COLOR := Color("7df9ff")
 
 var board: SimBoard
 var label := ""
+## The local player's one-block cursor, in place of the sim's two-block one. (-1, -1) if not.
+var cursor_cell := Vector2i(-1, -1)
+var cursor_held := false
 
 var _mm: MultiMesh
 var _cursor: Node3D
+var _cursor_one: Node3D
+var _cursor_one_mat: StandardMaterial3D
 var _title: Label3D
 var _callout: Label3D
 var _incoming: Label3D
@@ -54,19 +60,9 @@ func _ready() -> void:
 	mmi.multimesh = _mm
 	add_child(mmi)
 
-	# Cursor: a frame of four thin bars around two cells.
-	_cursor = Node3D.new()
-	add_child(_cursor)
-	var white := _unshaded(Color.WHITE)
-	for bar: Array in [[Vector3(0, 0.5, 0), Vector3(2.08, 0.08, 0.08)], [Vector3(0, -0.5, 0), Vector3(2.08, 0.08, 0.08)],
-			[Vector3(-1, 0, 0), Vector3(0.08, 1.08, 0.08)], [Vector3(1, 0, 0), Vector3(0.08, 1.08, 0.08)]]:
-		var m := MeshInstance3D.new()
-		var bm := BoxMesh.new()
-		bm.size = bar[1]
-		m.mesh = bm
-		m.position = bar[0] + Vector3(0, 0, 0.5)
-		m.material_override = white
-		_cursor.add_child(m)
+	_cursor = _cursor_frame(2.0, _unshaded(Color.WHITE))
+	_cursor_one_mat = _unshaded(Color.WHITE)
+	_cursor_one = _cursor_frame(1.0, _cursor_one_mat)
 
 	_title = _label(Vector3.ZERO, 40, HORIZONTAL_ALIGNMENT_LEFT)
 	_incoming = _label(Vector3.ZERO, 32, HORIZONTAL_ALIGNMENT_LEFT)
@@ -134,7 +130,15 @@ func _process(delta: float) -> void:
 		n += 1
 	_mm.visible_instance_count = n
 
-	_cursor.position = _to3d(BoardView.cursor(board)) + Vector3(0.5, 0, 0)
+	var one_block := cursor_cell.x >= 0
+	_cursor.visible = not one_block
+	_cursor_one.visible = one_block
+	if one_block:
+		_cursor_one.position = _to3d(BoardView.cell(board, cursor_cell))
+		_cursor_one.scale = Vector3.ONE * (1.12 if cursor_held else 1.0)
+		_cursor_one_mat.albedo_color = HELD_COLOR if cursor_held else Color.WHITE
+	else:
+		_cursor.position = _to3d(BoardView.cursor(board)) + Vector3(0.5, 0, 0)
 	_title.text = ("%s\n%d" % [label.replace(" (", "\n("), board.score] if _compact
 			else "%s  %d" % [label, board.score])
 	var incoming := BoardView.incoming(board)
@@ -168,6 +172,30 @@ func screen_to_cell(screen: Vector2) -> Vector2:
 	if p.x < 0.0 or p.x >= W or p.y < 0.0 or p.y >= H + 1:
 		return Vector2(-1, -1)
 	return p
+
+
+## Cell units -> screen point, where screen_to_cell would find that spot of the board's plane.
+func cell_to_screen(cell: Vector2) -> Vector2:
+	return get_viewport().get_camera_3d().unproject_position(
+			global_transform * Vector3(cell.x - W / 2.0, H / 2.0 - cell.y, 0))
+
+
+## A frame of four thin bars around this many cells, centred on its node.
+func _cursor_frame(cells: float, material: StandardMaterial3D) -> Node3D:
+	var frame := Node3D.new()
+	add_child(frame)
+	var wide := Vector3(cells + 0.08, 0.08, 0.08)
+	var tall := Vector3(0.08, 1.08, 0.08)
+	for bar: Array in [[Vector3(0, 0.5, 0), wide], [Vector3(0, -0.5, 0), wide],
+			[Vector3(-cells / 2.0, 0, 0), tall], [Vector3(cells / 2.0, 0, 0), tall]]:
+		var m := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = bar[1]
+		m.mesh = bm
+		m.position = bar[0] + Vector3(0, 0, 0.5)
+		m.material_override = material
+		frame.add_child(m)
+	return frame
 
 
 ## BoardView cell space (y down from the top visible row) -> local 3D (y up, centred).

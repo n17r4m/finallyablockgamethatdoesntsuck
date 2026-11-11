@@ -72,6 +72,23 @@ impl Referee {
         self.state.tick
     }
 
+    /// The game as far as the referee has played it.
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+
+    /// The tick up to which each player's inputs are final.
+    pub fn frontiers(&self) -> [i64; 2] {
+        self.frontier
+    }
+
+    /// Ends the match as a draw, on the say-so of whoever runs the server.
+    pub fn end(&mut self) {
+        if self.outcome.is_none() {
+            self.outcome = Some(Outcome { winner: 2, reason: EndReason::Ended, tick: self.state.tick });
+        }
+    }
+
     /// Ends the match against `seat`.
     pub fn forfeit(&mut self, seat: usize, reason: EndReason) {
         if self.outcome.is_none() {

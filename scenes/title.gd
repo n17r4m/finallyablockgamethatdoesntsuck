@@ -10,6 +10,8 @@ const TWO_COLUMNS_BELOW := 640.0 # one column of tap-sized rows doesn't fit a la
 var _status: Label
 var _name: LineEdit
 var _address: LineEdit
+var _room: LineEdit
+var _quick: Button
 var _cpu: OptionButton
 var _level: OptionButton
 var _blurb: Label
@@ -19,6 +21,9 @@ var _offline: VBoxContainer
 var _menu: ScrollContainer
 var _play: Button
 var _settings: Button
+# Whether this platform gets these buttons. Set before it enters the tree, tests stand in for one.
+var can_host: bool = Config.can_host()
+var can_quit: bool = Config.can_quit()
 
 
 func _ready() -> void:
@@ -51,9 +56,24 @@ func _ready() -> void:
 	_offline = _column()
 
 	_name = _field(_online, "Name", Config.get_value("player", "name"))
-	_address = _field(_online, "Host address", Config.get_value("net", "address"))
-	_button(_online, "Host", _host)
-	_button(_online, "Join", _join)
+	# The internet, through the match server.
+	_quick = _button(_online, "Quick match", _quick_match)
+	var room_row := HBoxContainer.new()
+	room_row.add_theme_constant_override("separation", GAP)
+	_online.add_child(room_row)
+	_room = _field(room_row, "Room code", "")
+	_room.max_length = 16
+	_room.size_flags_horizontal = SIZE_EXPAND_FILL
+	_room.text_submitted.connect(func(_t: String) -> void: _play_room())
+	_button(room_row, "Play a friend", _play_room).tooltip_text = "Leave the code empty to make a room and copy an invite link"
+	# The same room, on a LAN, without a server.
+	_address = _field(_online, "LAN host address", Config.get_value("net", "address"))
+	var lan_row := HBoxContainer.new()
+	lan_row.add_theme_constant_override("separation", GAP)
+	_online.add_child(lan_row)
+	if can_host:
+		_button(lan_row, "Host", _host).size_flags_horizontal = SIZE_EXPAND_FILL
+	_button(lan_row, "Join", _join).size_flags_horizontal = SIZE_EXPAND_FILL
 	var row := HBoxContainer.new()
 	_cpu = OptionButton.new()
 	_cpu.size_flags_horizontal = SIZE_EXPAND_FILL
@@ -85,7 +105,7 @@ func _ready() -> void:
 	box.add_child(bottom)
 	_settings = _button(bottom, "Settings", _open_settings)
 	_settings.size_flags_horizontal = SIZE_EXPAND_FILL
-	if not OS.has_feature("web"):
+	if can_quit:
 		_button(bottom, "Quit", get_tree().quit).size_flags_horizontal = SIZE_EXPAND_FILL
 
 	_status = Label.new()
@@ -118,6 +138,17 @@ func _ready() -> void:
 		var name := parts[0] if parts[0] in CpuPlayer.OPPONENTS else "Overmind"
 		Net.demo = args.has("demo")
 		Net.start_practice(name, parts[1] if parts.size() > 1 and parts[1] in CpuPlayer.LEVELS else "hard")
+
+
+## A keyboard or pad picked up on a touch screen, where nothing started with focus.
+func _unhandled_input(event: InputEvent) -> void:
+	if not _menu.visible or get_viewport().gui_get_focus_owner() != null:
+		return
+	for action: String in ["ui_up", "ui_down", "ui_left", "ui_right", "ui_accept", "ui_focus_next"]:
+		if event.is_action_pressed(action):
+			_play.grab_focus()
+			get_viewport().set_input_as_handled()
+			return
 
 
 func _exit_tree() -> void:
@@ -194,6 +225,27 @@ func _button(box: Container, label: String, action: Callable) -> Button:
 func _save_fields() -> void:
 	Config.set_value("player", "name", _name.text)
 	Config.set_value("net", "address", _address.text)
+
+
+func _quick_match() -> void:
+	_save_fields()
+	Net.play_online()
+
+
+## A code joins that room. No code makes one, and copies a link that opens the web game in it.
+func _play_room() -> void:
+	_save_fields()
+	var code := ""
+	for c in _room.text.strip_edges().to_upper():
+		if (c >= "A" and c <= "Z") or (c >= "0" and c <= "9"):
+			code += c
+	if code == "":
+		code = Net.new_room_code()
+		var link := Net.invite_link(code)
+		if link != "":
+			DisplayServer.clipboard_set(link)
+	_room.text = code
+	Net.play_online(code)
 
 
 func _host() -> void:

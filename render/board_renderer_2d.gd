@@ -9,11 +9,15 @@ const PALETTE: Array[Color] = [Color.BLACK, Color("e04f5f"), Color("4fc46a"), Co
 		Color("e8c547"), Color("a35fd6")]
 const GARBAGE_COLOR := Color("8a8f9e")
 const BG := Color(0.08, 0.08, 0.12)
+const HELD_COLOR := Color("7df9ff")
 
 var board: SimBoard
 var label := ""
 var text_scale := 1.0 # so text reads the same whatever the board's scale
 var compact := false # a small view of the opponent: name and score under the board
+## The local player's one-block cursor, in place of the sim's two-block one. (-1, -1) if not.
+var cursor_cell := Vector2i(-1, -1)
+var cursor_held := false
 
 
 ## Screen point -> cell units (x right, y down from the top visible row; y >= H is
@@ -26,6 +30,11 @@ func screen_to_cell(screen: Vector2) -> Vector2:
 	if p.x < 0.0 or p.x >= SimConst.W or p.y < 0.0 or p.y >= SimConst.H + 1:
 		return Vector2(-1, -1)
 	return p
+
+
+## Cell units -> screen point, where screen_to_cell would find that spot.
+func cell_to_screen(cell: Vector2) -> Vector2:
+	return get_global_transform_with_canvas() * (cell * CELL)
 
 
 func _process(_delta: float) -> void:
@@ -79,8 +88,12 @@ func _draw() -> void:
 	# Mask anything poking up out of the hidden buffer.
 	draw_rect(Rect2(-4, -CELL - 4, size.x + 8, CELL + 4), RenderingServer.get_default_clear_color())
 
-	var cur := BoardView.cursor(board)
-	draw_rect(Rect2(cur.x * CELL, cur.y * CELL, CELL * 2, CELL), Color.WHITE, false, 3.0)
+	if cursor_cell.x >= 0:
+		var one := BoardView.cell(board, cursor_cell)
+		draw_rect(Rect2(one.x * CELL, one.y * CELL, CELL, CELL), HELD_COLOR if cursor_held else Color.WHITE, false, 5.0 if cursor_held else 3.0)
+	else:
+		var cur := BoardView.cursor(board)
+		draw_rect(Rect2(cur.x * CELL, cur.y * CELL, CELL * 2, CELL), Color.WHITE, false, 3.0)
 
 	var title_size := int(20 * text_scale)
 	var small_size := int(16 * text_scale)

@@ -237,7 +237,7 @@ fn hostile_bytes_never_panic() {
         x
     };
     let real = [
-        ClientMsg::Hello { protocol: 1, rules: 1, tick_hz: 720 }.encode(),
+        ClientMsg::Hello { protocol: 2, rules: 1, tick_hz: 720, name: "Ünïcode name".into(), platform: "web".into() }.encode(),
         ClientMsg::Room("ABC123".into()).encode(),
         ClientMsg::Input(msg(10, vec![(5, 1)], vec![(720, 9)])).encode(),
     ];
@@ -266,7 +266,7 @@ fn hostile_bytes_never_panic() {
 fn every_message_survives_the_trip() {
     let input = InputMsg { frontier: 9, ack: -1, tick: 4, advantage: 1 << 40, changes: vec![(1, 2), (3, -4)], checks: vec![(720, -5)] };
     for m in [
-        ClientMsg::Hello { protocol: 1, rules: 2, tick_hz: 720 },
+        ClientMsg::Hello { protocol: 1, rules: 2, tick_hz: 720, name: "Ann".into(), platform: "android".into() },
         ClientMsg::Queue,
         ClientMsg::Room("A1".into()),
         ClientMsg::Input(input.clone()),
@@ -279,12 +279,33 @@ fn every_message_survives_the_trip() {
         ServerMsg::Welcome,
         ServerMsg::Refused("no".into()),
         ServerMsg::Waiting,
-        ServerMsg::Start { match_id: 7, seed: 1 << 31, seat: 1 },
+        ServerMsg::Start { match_id: 7, seed: 1 << 31, seat: 1, opponent: "Bob".into() },
         ServerMsg::Input(input),
         ServerMsg::Result { winner: 2, reason: EndReason::TooLong, tick: 5 },
         ServerMsg::Pong(1),
         ServerMsg::OpponentLeft,
+        ServerMsg::Notice("Back in five".into()),
+        ServerMsg::Result { winner: 2, reason: EndReason::Ended, tick: 1 },
     ] {
         assert_eq!(ServerMsg::decode(&m.encode()), Some(m));
     }
+}
+
+#[test]
+fn text_is_cut_on_a_character_boundary_and_names_are_cleaned() {
+    let long = "é".repeat(40); // 80 bytes
+    let bytes = ClientMsg::Hello { protocol: 2, rules: 1, tick_hz: 720, name: long, platform: "linux".into() }.encode();
+    let Some(ClientMsg::Hello { name, .. }) = ClientMsg::decode(&bytes) else { panic!("didn't decode") };
+    assert_eq!(name, "é".repeat(12));
+    assert_eq!(fbg_server::protocol::clean_name("  \u{7}Zed\n "), "Zed");
+    assert_eq!(fbg_server::protocol::clean_name(" \t "), "Player");
+}
+
+#[test]
+fn an_old_hello_still_decodes_so_it_can_be_told_to_update() {
+    let mut old = vec![1u8];
+    for v in [1u16, 1, 720] {
+        old.extend_from_slice(&v.to_le_bytes());
+    }
+    assert!(matches!(ClientMsg::decode(&old), Some(ClientMsg::Hello { protocol: 1, .. })));
 }

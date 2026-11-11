@@ -1,0 +1,31 @@
+# The match server, as a systemd service. tools/deploy.sh installs it; see docs/server-admin.md.
+# Draining from the admin console with "Drain & restart" stops it once the last game ends, and
+# Restart=always starts it again on whatever binary is installed by then.
+[Unit]
+Description=Block game match server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/fbg-server --listen 127.0.0.1:47110 --admin 127.0.0.1:47111 --trust-proxy --db /var/lib/fbg/fbg.db --replays /var/lib/fbg/replays
+Restart=always
+RestartSec=1
+# A user that exists only while the service runs, owning /var/lib/fbg and nothing else.
+DynamicUser=yes
+StateDirectory=fbg
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryMax=1G
+LimitNOFILE=16384
+
+[Install]
+WantedBy=multi-user.target

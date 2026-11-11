@@ -12,12 +12,19 @@ signal input(pkt: Dictionary)
 signal finished(winner: int, reason: int, tick: int)
 signal pong(sent_usec: int)
 signal opponent_left
+signal notice(text: String) # from whoever runs the server
 signal closed
 
-const PROTOCOL := 1
+const PROTOCOL := 2
+const MAX_NAME := 24 # bytes of UTF-8
 enum { HELLO = 1, QUEUE, ROOM, INPUT, REMATCH, PING }
-enum { WELCOME = 64, REFUSED, WAITING, START, RELAY, RESULT, PONG, OPPONENT_LEFT }
-enum { PLAYED, LEFT, STALLED, WRONG_STATE, BAD_INPUT, TOO_LONG }
+enum { WELCOME = 64, REFUSED, WAITING, START, RELAY, RESULT, PONG, OPPONENT_LEFT, NOTICE }
+enum { PLAYED, LEFT, STALLED, WRONG_STATE, BAD_INPUT, TOO_LONG, ENDED }
+
+## Who this player is to the server and the opponent. Set before open().
+var player_name := "Player"
+## The other player's name, from the latest start. Set before `started` is emitted.
+var opponent_name := ""
 
 var _ws := WebSocketPeer.new()
 var _hello_sent := false
@@ -90,12 +97,38 @@ func poll() -> void:
 				w.put_u16(PROTOCOL)
 				w.put_u16(SimConst.RULES_VERSION)
 				w.put_u16(SimConst.TICK_HZ)
+				_put_text(w, player_name, MAX_NAME)
+				_put_text(w, platform(), 16)
 				_send(w)
 			while _ws.get_available_packet_count() > 0 and not _closed:
 				decode(_ws.get_packet())
 		WebSocketPeer.STATE_CLOSED:
 			_closed = true
 			closed.emit()
+
+
+## What the server's console shows this game running on.
+static func platform() -> String:
+	if OS.has_feature("web"):
+		return "web_android" if OS.has_feature("web_android") else "web_ios" if OS.has_feature("web_ios") else "web"
+	return OS.get_name().to_lower().replace(" ", "_").left(16)
+
+
+## A length byte and UTF-8, cut to `limit` bytes without splitting a character.
+static func _put_text(w: StreamPeerBuffer, text: String, limit: int) -> void:
+	var bytes := text.to_utf8_buffer()
+	while bytes.size() > limit:
+		text = text.left(-1)
+		bytes = text.to_utf8_buffer()
+	w.put_u8(bytes.size())
+	w.put_data(bytes)
+
+
+## Text after a length byte at `at`, or null if it runs past the end.
+static func _text_at(bytes: PackedByteArray, at: int) -> Variant:
+	if at >= bytes.size() or at + 1 + bytes[at] > bytes.size():
+		return null
+	return bytes.slice(at + 1, at + 1 + bytes[at]).get_string_from_utf8()
 
 
 func _writer(kind: int) -> StreamPeerBuffer:
@@ -125,10 +158,13 @@ func decode(bytes: PackedByteArray) -> void:
 		WAITING:
 			waiting.emit()
 		START:
-			if size == 18:
+			var opponent: Variant = _text_at(bytes, 18)
+			if size >= 19 and opponent != null and size == 19 + bytes[18]:
 				var id := r.get_64()
 				var game_seed := r.get_64()
-				started.emit(id, game_seed, r.get_u8())
+				var seat := r.get_u8()
+				opponent_name = opponent
+				started.emit(id, game_seed, seat)
 		RELAY:
 			_decode_input(r, size)
 		RESULT:
@@ -141,6 +177,10 @@ func decode(bytes: PackedByteArray) -> void:
 				pong.emit(r.get_64())
 		OPPONENT_LEFT:
 			opponent_left.emit()
+		NOTICE:
+			var text: Variant = _text_at(bytes, 1)
+			if text != null and size == 2 + bytes[1]:
+				notice.emit(text)
 
 
 func _decode_input(r: StreamPeerBuffer, size: int) -> void:

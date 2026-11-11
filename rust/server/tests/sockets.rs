@@ -40,8 +40,12 @@ impl Client {
     }
 
     async fn hello(url: &str) -> Client {
+        Client::hello_as(url, "Player").await
+    }
+
+    async fn hello_as(url: &str, name: &str) -> Client {
         let mut c = Client::connect(url).await;
-        c.send(ClientMsg::Hello { protocol: PROTOCOL, rules: RULES_VERSION, tick_hz: TICK_HZ }).await;
+        c.send(hello(name)).await;
         assert_eq!(c.recv().await, Some(ServerMsg::Welcome));
         c
     }
@@ -55,6 +59,10 @@ impl Client {
             }
         }
     }
+}
+
+fn hello(name: &str) -> ClientMsg {
+    ClientMsg::Hello { protocol: PROTOCOL, rules: RULES_VERSION, tick_hz: TICK_HZ, name: name.into(), platform: "test".into() }
 }
 
 async fn start_server(config: Config) -> String {
@@ -71,7 +79,7 @@ async fn pair(url: &str, code: &str) -> (Client, Client, i64) {
     assert_eq!(a.recv().await, Some(ServerMsg::Waiting));
     b.send(ClientMsg::Room(code.into())).await;
     let (sa, sb) = (a.recv().await.unwrap(), b.recv().await.unwrap());
-    let (ServerMsg::Start { match_id: ma, seed: x, seat: 0 }, ServerMsg::Start { match_id: mb, seed: y, seat: 1 }) = (sa, sb) else {
+    let (ServerMsg::Start { match_id: ma, seed: x, seat: 0, .. }, ServerMsg::Start { match_id: mb, seed: y, seat: 1, .. }) = (sa, sb) else {
         panic!("expected seats 0 and 1");
     };
     assert_eq!((ma, x), (mb, y));
@@ -83,7 +91,7 @@ async fn a_wrong_version_is_told_why_and_closed() {
     let url = start_server(Config::default()).await;
     for (protocol, rules, says) in [(PROTOCOL + 1, RULES_VERSION, "protocol"), (PROTOCOL, RULES_VERSION + 1, "rules")] {
         let mut c = Client::connect(&url).await;
-        c.send(ClientMsg::Hello { protocol, rules, tick_hz: TICK_HZ }).await;
+        c.send(ClientMsg::Hello { protocol, rules, tick_hz: TICK_HZ, name: String::new(), platform: String::new() }).await;
         let Some(ServerMsg::Refused(why)) = c.recv().await else { panic!("expected a refusal") };
         assert!(why.contains(says), "{why}");
         assert_eq!(c.recv().await, None);
@@ -199,7 +207,7 @@ async fn junk_costs_the_sender_its_connection_and_nobody_else_anything() {
     }
     // Saying hello twice, and asking for a game while waiting for one.
     let mut c = Client::hello(&url).await;
-    c.send(ClientMsg::Hello { protocol: PROTOCOL, rules: RULES_VERSION, tick_hz: TICK_HZ }).await;
+    c.send(hello("Twice")).await;
     assert_eq!(c.recv().await, None);
     let mut c = Client::hello(&url).await;
     c.send(ClientMsg::Queue).await;

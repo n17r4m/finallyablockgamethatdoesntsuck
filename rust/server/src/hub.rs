@@ -1,39 +1,138 @@
 //! Connections, the lobby and running matches. One task owns all of it and everything else
-//! talks to that task, so there are no locks and a match can't be seen half-updated.
+//! talks to that task, so there are no locks and a match can't be seen half-updated. The admin
+//! console is one more thing that talks to it, through `AdminCmd`.
 
-use crate::protocol::{ClientMsg, EndReason, InputMsg, ServerMsg, MAX_CHANGES, MAX_CHECKS, PROTOCOL};
+use crate::protocol::{clean_name, ClientMsg, EndReason, InputMsg, ServerMsg, MAX_CHANGES, MAX_CHECKS, MAX_NAME, MAX_PLATFORM, PROTOCOL};
 use crate::referee::{Outcome, Referee};
-use fbg_sim::consts::{RULES_VERSION, TICK_HZ};
+use crate::store::{Loaded, Op, Seat, Store};
+use fbg_sim::consts::{BUF, RULES_VERSION, TICK_HZ, W};
 use futures_util::{SinkExt, StreamExt};
-use std::collections::HashMap;
+use serde::Serialize;
+use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
+use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
 const HELLO_LIMIT: Duration = Duration::from_secs(5);
 const CLOCK_EVERY: Duration = Duration::from_millis(250);
+const SAMPLE_EVERY: Duration = Duration::from_secs(60);
+const PING_EVERY: Duration = Duration::from_secs(2);
 const MAX_MESSAGES_PER_SECOND: u32 = 1000; // far above any display rate
 const OUTGOING_QUEUE: usize = 512;
-const MAX_FRAME: usize = 64 + MAX_CHANGES * 12 + MAX_CHECKS * 16;
+const MAX_FRAME: usize = 64 + MAX_CHANGES * 12 + MAX_CHECKS * 16 + MAX_NAME + MAX_PLATFORM;
+
+const DRAINING: &str = "The server is restarting for an update. Try again in a minute.";
+const BANNED: &str = "This address can't play on this server.";
 
 #[derive(Clone)]
 pub struct Config {
     pub max_connections: usize,
     pub replay_dir: Option<PathBuf>,
+    /// Take the player's address from X-Real-IP or X-Forwarded-For, when the connection comes
+    /// from this machine. Only for a reverse proxy that sets them.
+    pub trust_proxy: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { max_connections: 4096, replay_dir: None }
+        Config { max_connections: 4096, replay_dir: None, trust_proxy: false }
     }
 }
 
+/// What `run` can be given besides the listener.
+#[derive(Default)]
+pub struct Extras {
+    pub store: Option<(Store, Loaded)>,
+    pub admin: Option<mpsc::Receiver<AdminCmd>>,
+}
+
+/// What the admin console can ask of the hub. Actions answer with a line for the console.
+pub enum AdminCmd {
+    Snapshot(oneshot::Sender<Snapshot>),
+    Watch(u64, oneshot::Sender<Option<Watch>>),
+    Act(Action, oneshot::Sender<Result<String, String>>),
+}
+
+#[derive(Debug)]
+pub enum Action {
+    Kick(u64),
+    End(u64),
+    Notice(String),
+    /// Stop starting matches. With `exit`, the server stops once the last one ends.
+    Drain { on: bool, exit: bool },
+    Ban { addr: String, note: String },
+    Unban(String),
+}
+
+#[derive(Serialize)]
+pub struct Snapshot {
+    pub version: &'static str,
+    pub protocol: u16,
+    pub rules: u16,
+    pub uptime_s: u64,
+    pub draining: bool,
+    pub exit_when_drained: bool,
+    pub conns: Vec<ConnInfo>,
+    pub matches: Vec<MatchInfo>,
+}
+
+#[derive(Serialize)]
+pub struct ConnInfo {
+    pub id: u64,
+    pub name: String,
+    pub addr: String,
+    pub platform: String,
+    pub place: String, // "new", "lobby", "queue", "room CODE" or "match N"
+    pub rtt_ms: Option<u32>,
+    pub age_s: u64,
+}
+
+#[derive(Serialize)]
+pub struct MatchInfo {
+    pub id: u64,
+    pub seed: i64,
+    pub conns: [u64; 2],
+    pub names: [String; 2],
+    pub age_s: u64,
+    pub clock: i64,     // the server's tick
+    pub refereed: i64,  // how far the referee has played
+    pub frontiers: [i64; 2],
+    pub late: [i64; 2], // worst input lateness, ticks
+    pub over: Option<String>,
+}
+
+/// One match's boards as the referee has them, for watching from the console.
+#[derive(Serialize)]
+pub struct Watch {
+    pub id: u64,
+    pub tick: i64,
+    pub names: [String; 2],
+    pub over: Option<String>,
+    pub boards: Vec<BoardView>,
+}
+
+#[derive(Serialize)]
+pub struct BoardView {
+    pub cells: Vec<u8>, // visible rows only, top row first, 0 empty
+    pub next_row: Vec<u8>,
+    pub cursor: [i64; 2],
+    pub score: i64,
+    pub chain: i64,
+    pub health: i64,
+    pub incoming: usize,
+    pub lost: bool,
+}
+
 enum Event {
-    Opened(u64, mpsc::Sender<Vec<u8>>),
+    Opened(u64, mpsc::Sender<Vec<u8>>, IpAddr),
     Message(u64, ClientMsg),
+    Rtt(u64, u32),
     Junk(u64),
     Closed(u64),
 }
@@ -52,10 +151,16 @@ struct Conn {
     opened: Instant,
     window: Instant,
     messages: u32,
+    addr: IpAddr,
+    name: String,
+    platform: String,
+    rtt_ms: Option<u32>,
 }
 
 struct Match {
     conns: [u64; 2],
+    names: [String; 2],
+    seed: i64,
     referee: Referee,
     started: Instant,
     rematch: [bool; 2],
@@ -69,56 +174,131 @@ struct Hub {
     rooms: HashMap<String, u64>,
     next_match: u64,
     config: Config,
+    store: Option<Store>,
+    bans: HashSet<String>,
+    draining: bool,
+    exit_when_drained: bool,
+    born: Instant,
 }
 
 /// Runs the server on a listener that's already bound, until the process ends.
 pub async fn serve(listener: TcpListener, config: Config) {
+    run(listener, config, Extras::default()).await
+}
+
+/// Runs the server until the process ends, or until a drain asked to exit and the last match
+/// has finished.
+pub async fn run(listener: TcpListener, config: Config, extras: Extras) {
     let (events, mut inbox) = mpsc::channel::<Event>(4096);
-    let accepting = tokio::spawn(accept_loop(listener, events));
-    let mut hub = Hub { conns: HashMap::new(), matches: HashMap::new(), queue: None, rooms: HashMap::new(), next_match: 1, config };
+    let accepting = tokio::spawn(accept_loop(listener, events, config.trust_proxy));
+    let (store, loaded) = match extras.store {
+        Some((s, l)) => (Some(s), Some(l)),
+        None => (None, None),
+    };
+    let mut hub = Hub {
+        conns: HashMap::new(),
+        matches: HashMap::new(),
+        queue: None,
+        rooms: HashMap::new(),
+        next_match: loaded.as_ref().map_or(1, |l| l.next_match),
+        config,
+        store,
+        bans: loaded.map(|l| l.bans.into_iter().collect()).unwrap_or_default(),
+        draining: false,
+        exit_when_drained: false,
+        born: Instant::now(),
+    };
+    let (_keep, mut admin) = match extras.admin {
+        Some(rx) => (None, rx),
+        None => {
+            let (tx, rx) = mpsc::channel(1);
+            (Some(tx), rx) // never sends, so the branch below never fires
+        }
+    };
     let mut clock = tokio::time::interval(CLOCK_EVERY);
+    let mut sample = tokio::time::interval(SAMPLE_EVERY);
     loop {
         tokio::select! {
             event = inbox.recv() => match event {
                 Some(event) => hub.handle(event),
                 None => break,
             },
+            Some(cmd) = admin.recv() => hub.on_admin(cmd),
             _ = clock.tick() => hub.on_clock(),
+            _ = sample.tick() => hub.on_sample(),
+        }
+        if hub.exit_when_drained && hub.matches.is_empty() {
+            println!("drained: stopping");
+            break;
         }
     }
     accepting.abort();
+    if let Some(store) = &hub.store {
+        store.flush();
+    }
 }
 
-async fn accept_loop(listener: TcpListener, events: mpsc::Sender<Event>) {
+async fn accept_loop(listener: TcpListener, events: mpsc::Sender<Event>, trust_proxy: bool) {
     let mut next_id = 1u64;
     loop {
-        let Ok((stream, _)) = listener.accept().await else {
+        let Ok((stream, peer)) = listener.accept().await else {
             tokio::time::sleep(Duration::from_millis(50)).await;
             continue;
         };
         let id = next_id;
         next_id += 1;
-        tokio::spawn(run_connection(id, stream, events.clone()));
+        let trust = trust_proxy && peer.ip().is_loopback();
+        tokio::spawn(run_connection(id, stream, peer.ip(), trust, events.clone()));
     }
 }
 
+/// The address a reverse proxy says the player connected from.
+fn forwarded_for(req: &Request) -> Option<IpAddr> {
+    let real = req.headers().get("x-real-ip").and_then(|v| v.to_str().ok());
+    let forwarded = req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok()).and_then(|v| v.rsplit(',').next());
+    real.or(forwarded)?.trim().parse().ok()
+}
+
 /// One player's socket. Rollback needs inputs now, not a fuller packet later: hence no Nagle.
-async fn run_connection(id: u64, stream: TcpStream, events: mpsc::Sender<Event>) {
+async fn run_connection(id: u64, stream: TcpStream, peer: IpAddr, trust_proxy: bool, events: mpsc::Sender<Event>) {
     let _ = stream.set_nodelay(true);
     let config = WebSocketConfig::default().max_message_size(Some(MAX_FRAME)).max_frame_size(Some(MAX_FRAME));
-    let handshake = tokio_tungstenite::accept_async_with_config(stream, Some(config));
+    let addr = Arc::new(Mutex::new(peer));
+    let seen = addr.clone();
+    let callback = move |req: &Request, res: Response| {
+        if trust_proxy {
+            if let Some(ip) = forwarded_for(req) {
+                *seen.lock().unwrap() = ip;
+            }
+        }
+        Ok(res)
+    };
+    let handshake = tokio_tungstenite::accept_hdr_async_with_config(stream, callback, Some(config));
     let Ok(Ok(socket)) = tokio::time::timeout(HELLO_LIMIT, handshake).await else {
         return;
     };
+    let addr = *addr.lock().unwrap();
     let (mut sink, mut source) = socket.split();
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(OUTGOING_QUEUE);
-    if events.send(Event::Opened(id, tx)).await.is_err() {
+    if events.send(Event::Opened(id, tx, addr)).await.is_err() {
         return;
     }
+    // WebSocket pings measure the round trip for the console. Browsers answer them by themselves.
+    let born = Instant::now();
     let writer = tokio::spawn(async move {
-        while let Some(bytes) = rx.recv().await {
-            if sink.send(Message::binary(bytes)).await.is_err() {
-                break;
+        let mut ping = tokio::time::interval(PING_EVERY);
+        loop {
+            tokio::select! {
+                bytes = rx.recv() => match bytes {
+                    Some(bytes) => if sink.send(Message::binary(bytes)).await.is_err() { break },
+                    None => break,
+                },
+                _ = ping.tick() => {
+                    let stamp = (born.elapsed().as_micros() as u64).to_le_bytes();
+                    if sink.send(Message::Ping(stamp.to_vec().into())).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
         let _ = sink.close().await;
@@ -130,7 +310,16 @@ async fn run_connection(id: u64, stream: TcpStream, events: mpsc::Sender<Event>)
                 None => Event::Junk(id),
             },
             Message::Close(_) => break,
-            Message::Ping(_) | Message::Pong(_) => continue,
+            Message::Pong(stamp) => {
+                let Ok(stamp) = <[u8; 8]>::try_from(&stamp[..]) else { continue };
+                let sent = u64::from_le_bytes(stamp);
+                let now = born.elapsed().as_micros() as u64;
+                if sent > now {
+                    continue; // not one of ours
+                }
+                Event::Rtt(id, ((now - sent) / 1000).min(u32::MAX as u64) as u32)
+            }
+            Message::Ping(_) => continue,
             _ => Event::Junk(id),
         };
         if events.send(event).await.is_err() {
@@ -148,7 +337,7 @@ fn new_seed() -> i64 {
     i64::from(u32::from_le_bytes(bytes))
 }
 
-fn name_of(reason: EndReason) -> &'static str {
+pub fn name_of(reason: EndReason) -> &'static str {
     match reason {
         EndReason::Played => "played",
         EndReason::Left => "left",
@@ -156,25 +345,49 @@ fn name_of(reason: EndReason) -> &'static str {
         EndReason::WrongState => "wrong_state",
         EndReason::BadInput => "bad_input",
         EndReason::TooLong => "too_long",
+        EndReason::Ended => "ended",
     }
+}
+
+fn describe(o: &Outcome) -> String {
+    let who = match o.winner {
+        0 | 1 => format!("seat {} won", o.winner),
+        _ => "draw".into(),
+    };
+    format!("{who}, {}", name_of(o.reason))
 }
 
 impl Hub {
     fn handle(&mut self, event: Event) {
         match event {
-            Event::Opened(id, tx) => {
-                if self.conns.len() >= self.config.max_connections {
-                    let _ = tx.try_send(ServerMsg::Refused("The server is full".into()).encode());
+            Event::Opened(id, tx, addr) => {
+                let refusal = if self.bans.contains(&addr.to_string()) {
+                    Some(BANNED)
+                } else if self.conns.len() >= self.config.max_connections {
+                    Some("The server is full")
+                } else {
+                    None
+                };
+                if let Some(why) = refusal {
+                    let _ = tx.try_send(ServerMsg::Refused(why.into()).encode());
                     return; // dropping tx ends the writer, which closes the socket
                 }
                 let now = Instant::now();
-                self.conns.insert(id, Conn { tx, place: Place::New, opened: now, window: now, messages: 0 });
+                self.conns.insert(
+                    id,
+                    Conn { tx, place: Place::New, opened: now, window: now, messages: 0, addr, name: String::new(), platform: String::new(), rtt_ms: None },
+                );
             }
             Event::Message(id, msg) => {
                 if self.over_rate(id) {
                     self.drop_conn(id);
                 } else {
                     self.on_message(id, msg);
+                }
+            }
+            Event::Rtt(id, ms) => {
+                if let Some(c) = self.conns.get_mut(&id) {
+                    c.rtt_ms = Some(ms);
                 }
             }
             Event::Junk(id) | Event::Closed(id) => self.drop_conn(id),
@@ -208,17 +421,24 @@ impl Hub {
         let Some(place) = self.conns.get(&id).map(|c| &c.place) else { return };
         let playing = if let Place::Playing(m) = place { Some(*m) } else { None };
         match msg {
-            ClientMsg::Hello { protocol, rules, tick_hz } if *place == Place::New => {
+            ClientMsg::Hello { protocol, rules, tick_hz, name, platform } if *place == Place::New => {
                 if protocol != PROTOCOL {
                     self.refuse(id, format!("This game speaks protocol {protocol}, the server {PROTOCOL}. Please update."));
                 } else if rules != RULES_VERSION || tick_hz != TICK_HZ {
                     self.refuse(id, format!("This game has rules {rules}, the server {RULES_VERSION}. Please update."));
                 } else {
+                    if let Some(c) = self.conns.get_mut(&id) {
+                        c.name = clean_name(&name);
+                        c.platform = platform;
+                    }
                     self.set_place(id, Place::Lobby);
                     self.send(id, &ServerMsg::Welcome);
                 }
             }
             ClientMsg::Ping(t) => self.send(id, &ServerMsg::Pong(t)),
+            ClientMsg::Queue | ClientMsg::Room(_) if *place == Place::Lobby && self.draining => {
+                self.refuse(id, DRAINING.into());
+            }
             ClientMsg::Queue if *place == Place::Lobby => match self.queue.take() {
                 Some(other) if other != id => self.start_match([other, id]),
                 _ => {
@@ -258,15 +478,31 @@ impl Hub {
         }
     }
 
+    fn seat_of(&self, id: u64) -> Seat {
+        match self.conns.get(&id) {
+            Some(c) => Seat { name: c.name.clone(), addr: c.addr.to_string(), platform: c.platform.clone() },
+            None => Seat { name: String::new(), addr: String::new(), platform: String::new() },
+        }
+    }
+
     fn start_match(&mut self, conns: [u64; 2]) {
         let match_id = self.next_match;
         self.next_match += 1;
         let seed = new_seed();
-        self.matches.insert(match_id, Match { conns, referee: Referee::new(seed), started: Instant::now(), rematch: [false; 2], announced: false });
-        println!("match {match_id} start seed={seed}");
+        let seats = conns.map(|id| self.seat_of(id));
+        let names = [seats[0].name.clone(), seats[1].name.clone()];
+        self.matches.insert(
+            match_id,
+            Match { conns, names: names.clone(), seed, referee: Referee::new(seed), started: Instant::now(), rematch: [false; 2], announced: false },
+        );
+        println!("match {match_id} start seed={seed} {:?} vs {:?}", names[0], names[1]);
+        if let Some(store) = &self.store {
+            store.write(Op::Started { id: match_id, seed, seats });
+        }
         for (seat, id) in conns.into_iter().enumerate() {
             self.set_place(id, Place::Playing(match_id));
-            self.send(id, &ServerMsg::Start { match_id, seed, seat: seat as u8 });
+            let opponent = names[1 - seat].clone();
+            self.send(id, &ServerMsg::Start { match_id, seed, seat: seat as u8, opponent });
         }
     }
 
@@ -303,19 +539,29 @@ impl Hub {
         for id in conns {
             self.send(id, &ServerMsg::Result { winner, reason, tick });
         }
+        let mut saved = None;
         if let (Some(dir), Some(replay)) = (self.config.replay_dir.clone(), replay) {
-            let path = dir.join(format!("{mid}-{}.fbgr", replay.seed));
+            let file = format!("{mid}-{}.fbgr", replay.seed);
+            let path = dir.join(&file);
+            saved = Some(file);
             tokio::task::spawn_blocking(move || {
                 if let Err(e) = std::fs::write(&path, replay.encode()) {
                     eprintln!("can't save {}: {e}", path.display());
                 }
             });
         }
+        if let Some(store) = &self.store {
+            store.write(Op::Ended { id: mid, winner, reason: name_of(reason), tick, late, replay: saved });
+        }
     }
 
     fn on_rematch(&mut self, mid: u64, id: u64) {
         let Some(game) = self.matches.get_mut(&mid) else { return };
         if !game.announced {
+            return;
+        }
+        if self.draining {
+            self.send(id, &ServerMsg::Notice("The server is about to restart, so no rematch this time.".into()));
             return;
         }
         let seat = if game.conns[0] == id { 0 } else { 1 };
@@ -345,6 +591,24 @@ impl Hub {
         for id in silent {
             self.drop_conn(id);
         }
+        // While draining, a finished match is only waiting for rematches that won't come.
+        if self.draining {
+            let finished: Vec<u64> = self.matches.iter().filter(|(_, m)| m.announced).map(|(id, _)| *id).collect();
+            for mid in finished {
+                if let Some(game) = self.matches.remove(&mid) {
+                    for id in game.conns {
+                        self.set_place(id, Place::Lobby);
+                    }
+                }
+            }
+        }
+    }
+
+    fn on_sample(&mut self) {
+        let Some(store) = &self.store else { return };
+        let playing = self.conns.values().filter(|c| matches!(c.place, Place::Playing(_))).count();
+        let waiting = self.conns.values().filter(|c| c.place == Place::Waiting).count();
+        store.write(Op::Sample { online: self.conns.len(), playing, waiting });
     }
 
     /// Removes a connection without telling it anything.
@@ -376,6 +640,187 @@ impl Hub {
         self.send(other, &ServerMsg::OpponentLeft);
         // They stay connected, and can look for another game.
         self.set_place(other, Place::Lobby);
+    }
+
+    // The admin console.
+
+    fn on_admin(&mut self, cmd: AdminCmd) {
+        match cmd {
+            AdminCmd::Snapshot(reply) => {
+                let _ = reply.send(self.snapshot());
+            }
+            AdminCmd::Watch(mid, reply) => {
+                let _ = reply.send(self.watch(mid));
+            }
+            AdminCmd::Act(action, reply) => {
+                let what = format!("{action:?}");
+                let result = self.act(action);
+                if let (Some(store), Ok(_)) = (&self.store, &result) {
+                    store.write(Op::Audit(what.clone()));
+                }
+                println!("admin: {what} -> {result:?}");
+                let _ = reply.send(result);
+            }
+        }
+    }
+
+    fn act(&mut self, action: Action) -> Result<String, String> {
+        match action {
+            Action::Kick(id) => {
+                if !self.conns.contains_key(&id) {
+                    return Err(format!("no connection {id}"));
+                }
+                self.send(id, &ServerMsg::Notice("You were removed from the server.".into()));
+                self.drop_conn(id);
+                Ok(format!("kicked {id}"))
+            }
+            Action::End(mid) => {
+                let Some(game) = self.matches.get_mut(&mid) else { return Err(format!("no match {mid}")) };
+                if game.announced {
+                    return Err(format!("match {mid} is already over"));
+                }
+                game.referee.end();
+                self.announce_if_over(mid);
+                Ok(format!("ended match {mid} as a draw"))
+            }
+            Action::Notice(text) => {
+                let text = text.trim().to_owned();
+                if text.is_empty() {
+                    return Err("nothing to say".into());
+                }
+                let ids: Vec<u64> = self.conns.iter().filter(|(_, c)| c.place != Place::New).map(|(id, _)| *id).collect();
+                let n = ids.len();
+                for id in ids {
+                    self.send(id, &ServerMsg::Notice(text.clone()));
+                }
+                Ok(format!("told {n} players"))
+            }
+            Action::Drain { on, exit } => {
+                self.draining = on;
+                self.exit_when_drained = on && exit;
+                if !on {
+                    return Ok("taking new matches again".into());
+                }
+                // Whoever is waiting won't get a game now.
+                let waiting: Vec<u64> = self.conns.iter().filter(|(_, c)| c.place == Place::Waiting).map(|(id, _)| *id).collect();
+                for id in waiting {
+                    self.drop_waiting(id);
+                    self.refuse(id, DRAINING.into());
+                }
+                let playing: Vec<u64> = self.conns.iter().filter(|(_, c)| matches!(c.place, Place::Playing(_))).map(|(id, _)| *id).collect();
+                for id in playing {
+                    self.send(id, &ServerMsg::Notice("The server will restart after this game.".into()));
+                }
+                let left = self.matches.values().filter(|m| !m.announced).count();
+                Ok(format!("draining, {left} matches still playing{}", if exit { ", then stopping" } else { "" }))
+            }
+            Action::Ban { addr, note } => {
+                let ip: IpAddr = addr.trim().parse().map_err(|_| format!("{addr} isn't an address"))?;
+                let addr = ip.to_string();
+                self.bans.insert(addr.clone());
+                if let Some(store) = &self.store {
+                    store.write(Op::Ban { addr: addr.clone(), note });
+                }
+                let theirs: Vec<u64> = self.conns.iter().filter(|(_, c)| c.addr == ip).map(|(id, _)| *id).collect();
+                let n = theirs.len();
+                for id in theirs {
+                    self.send(id, &ServerMsg::Notice(BANNED.into()));
+                    self.drop_conn(id);
+                }
+                Ok(format!("banned {addr}, closed {n} connections"))
+            }
+            Action::Unban(addr) => {
+                let addr = addr.trim().to_owned();
+                if !self.bans.remove(&addr) {
+                    return Err(format!("{addr} isn't banned"));
+                }
+                if let Some(store) = &self.store {
+                    store.write(Op::Unban { addr: addr.clone() });
+                }
+                Ok(format!("unbanned {addr}"))
+            }
+        }
+    }
+
+    /// Takes a waiting player out of the queue or their room, leaving the connection.
+    fn drop_waiting(&mut self, id: u64) {
+        if self.queue == Some(id) {
+            self.queue = None;
+        }
+        self.rooms.retain(|_, waiting| *waiting != id);
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        let room_of: HashMap<u64, &str> = self.rooms.iter().map(|(code, id)| (*id, code.as_str())).collect();
+        let mut conns: Vec<ConnInfo> = self
+            .conns
+            .iter()
+            .map(|(id, c)| ConnInfo {
+                id: *id,
+                name: c.name.clone(),
+                addr: c.addr.to_string(),
+                platform: c.platform.clone(),
+                place: match c.place {
+                    Place::New => "new".into(),
+                    Place::Lobby => "lobby".into(),
+                    Place::Waiting => match room_of.get(id) {
+                        Some(code) => format!("room {code}"),
+                        None => "queue".into(),
+                    },
+                    Place::Playing(m) => format!("match {m}"),
+                },
+                rtt_ms: c.rtt_ms,
+                age_s: c.opened.elapsed().as_secs(),
+            })
+            .collect();
+        conns.sort_by_key(|c| c.id);
+        let mut matches: Vec<MatchInfo> = self
+            .matches
+            .iter()
+            .map(|(id, m)| MatchInfo {
+                id: *id,
+                seed: m.seed,
+                conns: m.conns,
+                names: m.names.clone(),
+                age_s: m.started.elapsed().as_secs(),
+                clock: ticks_since(m.started),
+                refereed: m.referee.tick(),
+                frontiers: m.referee.frontiers(),
+                late: m.referee.latest_input,
+                over: m.referee.outcome().map(|o| describe(&o)),
+            })
+            .collect();
+        matches.sort_by_key(|m| m.id);
+        Snapshot {
+            version: env!("CARGO_PKG_VERSION"),
+            protocol: PROTOCOL,
+            rules: RULES_VERSION,
+            uptime_s: self.born.elapsed().as_secs(),
+            draining: self.draining,
+            exit_when_drained: self.exit_when_drained,
+            conns,
+            matches,
+        }
+    }
+
+    fn watch(&self, mid: u64) -> Option<Watch> {
+        let m = self.matches.get(&mid)?;
+        let state = m.referee.state();
+        let boards = state
+            .boards
+            .iter()
+            .map(|b| BoardView {
+                cells: b.color[BUF * W..].to_vec(),
+                next_row: b.next_row.to_vec(),
+                cursor: [b.cursor_x, b.cursor_y - BUF as i64],
+                score: b.score,
+                chain: b.chain_n,
+                health: b.health,
+                incoming: b.gar_q.len(),
+                lost: b.lost,
+            })
+            .collect();
+        Some(Watch { id: mid, tick: state.tick, names: m.names.clone(), over: m.referee.outcome().map(|o| describe(&o)), boards })
     }
 }
 

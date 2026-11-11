@@ -4,13 +4,17 @@ extends Node2D
 ## read BoardView only; config video/renderer picks "3d" (default) or "2d".
 
 const REPLAY_DIR := "user://replays"
-const TOUCH_HINT := "drag a block to swap · tap to move the cursor · hold the bottom row to raise"
 const HINT_DP := 12 # font size in dp, for reading at arm's length on a phone
+const HINT_MIN := 16 # font size in project units, for a desktop window
+const HINT_PAD_CELLS := 0.3 # clear of the board, whose blocks stand in front of its plane
+const HINT_ROWS := 4.5 # a narrow screen's hint: the empty top of your well, above the countdown
+const EDGE_UNITS := 20.0
 const RETRY_TAP_DELAY_MS := 1000 # a player still dragging when the game ends isn't asking to retry
 const LEAVE_SIZE_DP := Vector2(72, 48) # 48 is the usual minimum for a finger
 const LEAVE_MARGIN_DP := 8.0
 const LEAVE_FONT_DP := 14.0
 const LEAVE_CONFIRM_MS := 3000
+const NOTICE_MS := 8000 # how long a message from the server's operator stays up
 const CAM_Y := 0.3
 const CAM_Z := 20.5
 const CAM_FOV := 42.0
@@ -30,6 +34,8 @@ const HINT_ROOM := 1.0 # under the board, if the screen has it, clear of the pho
 var session: RollbackSession
 var _offline := false
 var _ended := ""
+var _opponent_gone := false
+var _left := false
 var _rematch_sent := false
 var _acc := 0 # tick-units * 1e6, so no float drift
 var _last_usec := 0
@@ -38,9 +44,10 @@ var _cpu: CpuPlayer # offline opponent on board 1
 var _pilot: CpuPlayer # demo mode: a CPU on your board too
 var _over_msec := -1 # when the game ended
 var _cam: Camera3D
-var _keys_hint: String = Controls.hint()
 var _leave_button: Button
 var _leave_asked_msec := -1 # when a tap asked to leave a running game, waiting for the second
+var _notice := ""
+var _notice_msec := -1
 
 
 func _ready() -> void:
@@ -60,6 +67,7 @@ func _ready() -> void:
 		session.outgoing.connect(Net.send)
 		Net.packet.connect(session.receive)
 		Net.opponent_left.connect(_on_opponent_left)
+		Net.notice.connect(_on_notice)
 	if Config.get_value("video", "renderer") == "2d":
 		_build_2d()
 	else:
@@ -67,6 +75,7 @@ func _ready() -> void:
 	_layout()
 	get_viewport().size_changed.connect(_layout) # a phone can turn at any time
 	Controls.reset_touch()
+	Controls.input_is_delayed = delay > 0
 	if not _pilot:
 		Controls.board_mapper = _views[Net.local_idx].screen_to_cell
 	_build_leave_button()
@@ -80,7 +89,6 @@ func _build_leave_button() -> void:
 	add_child(layer)
 	_leave_button = Button.new()
 	_leave_button.text = "Leave"
-	_leave_button.visible = Controls.touch_first
 	_leave_button.focus_mode = Control.FOCUS_NONE # or space, a swap key, would press it
 	_leave_button.modulate.a = 0.7
 	_leave_button.set_anchors_preset(Control.PRESET_TOP_RIGHT)
@@ -99,10 +107,10 @@ func _fit_leave_button() -> void:
 	_leave_button.offset_bottom = (LEAVE_MARGIN_DP + LEAVE_SIZE_DP.y) * dp
 
 
-## The button and Android's back. A stray tap shouldn't throw away a game still being played,
-## so that takes a second one; there's nothing to lose once it's over.
+## The button, leave's key or pad button, and Android's back. A stray press shouldn't throw away
+## a game still being played, so that takes a second one; there's nothing to lose once it's over.
 func _ask_to_leave() -> void:
-	if _ended != "" or session.state.winner != -1 or _pilot or _leave_asked_msec != -1:
+	if _ended != "" or _opponent_gone or session.state.winner != -1 or _pilot or _leave_asked_msec != -1:
 		_leave()
 		return
 	_leave_asked_msec = Time.get_ticks_msec()
@@ -110,6 +118,7 @@ func _ask_to_leave() -> void:
 
 
 func _leave() -> void:
+	_left = true
 	Net.leave()
 	Scenes.goto(Scenes.TITLE)
 
@@ -228,7 +237,9 @@ func _solo() -> bool:
 func _label(p: int) -> String:
 	if p == Net.local_idx:
 		return "Overmind (%s)" % Net.cpu_level if _pilot else "YOU"
-	return "%s (%s)" % [Net.cpu_name, Net.cpu_level] if _cpu else "THEM"
+	if _cpu:
+		return "%s (%s)" % [Net.cpu_name, Net.cpu_level]
+	return Net.opponent_name.to_upper() if Net.opponent_name != "" else "THEM"
 
 
 func _exit_tree() -> void:
@@ -241,8 +252,9 @@ func _exit_tree() -> void:
 
 func _process(delta: float) -> void:
 	if Input.is_action_just_pressed("leave"):
-		_leave()
-		return
+		_ask_to_leave()
+		if _left:
+			return
 	if _leave_asked_msec != -1 and Time.get_ticks_msec() - _leave_asked_msec >= LEAVE_CONFIRM_MS:
 		_leave_asked_msec = -1
 		_leave_button.text = "Leave"
@@ -255,7 +267,7 @@ func _process(delta: float) -> void:
 	var due := mini(_acc / 1_000_000, SimConst.TICK_HZ / 10)
 	# Ticks lost to a stall are dropped, not banked: the side that's ahead slows down.
 	_acc = mini(_acc - due * 1_000_000, 1_000_000)
-	if _ended == "":
+	if _ended == "" and not _opponent_gone:
 		var me := session.local_idx
 		var my_board := session.state.boards[me]
 		if session.input_open():
@@ -273,14 +285,18 @@ func _process(delta: float) -> void:
 		Net.request_rematch()
 	for p in 2:
 		_views[p].board = session.state.boards[p]
+	if not _pilot:
+		_views[session.local_idx].cursor_cell = Controls.cursor_cell()
+		_views[session.local_idx].cursor_held = Controls.holding()
 	queue_redraw()
 
 
-## Keyboards swap and escape at the end of a match (see _process); fingers tap.
+## Keys and buttons swap and leave at the end of a match (see _process). Fingers and mice tap: a
+## mouse press arrives as a touch too.
 func _unhandled_input(event: InputEvent) -> void:
-	if not Controls.touch_first or not (event is InputEventScreenTouch and event.pressed):
+	if not (event is InputEventScreenTouch and event.pressed):
 		return
-	if _ended != "":
+	if _ended != "" or _opponent_gone:
 		_leave()
 	elif (_over_msec != -1 and not _pilot and not _rematch_sent
 			and Time.get_ticks_msec() - _over_msec >= RETRY_TAP_DELAY_MS):
@@ -300,10 +316,7 @@ func _draw() -> void:
 	var hud_size := maxi(16, int(11 * dp))
 	if Config.get_value("video", "show_stats"):
 		draw_string(font, Vector2(20, 14 + hud_size), hud, HORIZONTAL_ALIGNMENT_LEFT, -1, hud_size, Color(1, 1, 1, 0.5))
-	if Controls.touch_first:
-		_draw_touch_hint(font, view)
-	else:
-		draw_string(font, Vector2(20, view.y - 20), _keys_hint, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1, 1, 1, 0.4))
+	_draw_hint(font)
 
 	var big := ""
 	var small := ""
@@ -322,10 +335,19 @@ func _draw() -> void:
 		small += ("   waiting for opponent…" if _rematch_sent and not _offline
 				else _retry_text())
 		if _pilot:
-			small = "   demo" if Controls.touch_first else "   demo — %s for title" % Controls.leave_name()
+			small = "   demo" if Controls.tap_word() != "" else "   demo — %s for title" % Controls.leave_name()
+	if _opponent_gone and _ended == "":
+		big = ""
+		small = "%s — %s for title" % [Net.gone_why if Net.gone_why != "" else "Opponent left",
+				Controls.tap_word() if Controls.tap_word() != "" else Controls.leave_name()]
 	if _ended != "":
 		big = ""
 		small = _ended
+	if _notice != "" and Time.get_ticks_msec() - _notice_msec < NOTICE_MS:
+		var notice_size := maxi(20, int(13 * dp))
+		var at := Vector2(0, 14 + hud_size + notice_size * 2)
+		draw_string_outline(font, at, _notice, HORIZONTAL_ALIGNMENT_CENTER, view.x, notice_size, notice_size / 3, Color.BLACK)
+		draw_string(font, at, _notice, HORIZONTAL_ALIGNMENT_CENTER, view.x, notice_size, Color(1.0, 0.85, 0.4))
 	var big_size := maxi(72, int(40 * dp))
 	var small_size := maxi(24, int(16 * dp))
 	if big != "":
@@ -337,21 +359,53 @@ func _draw() -> void:
 		draw_string(font, at, small, HORIZONTAL_ALIGNMENT_CENTER, view.x, small_size)
 
 
-## Only during the countdown: at this size it covers the blocks the fingers are working on.
-func _draw_touch_hint(font: Font, view: Vector2) -> void:
-	if session.state.tick >= SimConst.COUNTDOWN_TICKS:
+## Only during the countdown, when there's time to read it and nothing yet to cover.
+func _draw_hint(font: Font) -> void:
+	if not _hint_showing():
 		return
-	var hint_size := int(HINT_DP * Controls.dp_scale())
-	var width := view.x - 40
-	var height := font.get_multiline_string_size(TOUCH_HINT, HORIZONTAL_ALIGNMENT_CENTER, width, hint_size).y
-	var at := Vector2(20, view.y - 10 - height + font.get_ascent(hint_size))
-	draw_multiline_string_outline(font, at, TOUCH_HINT, HORIZONTAL_ALIGNMENT_CENTER, width, hint_size, -1, hint_size / 3, Color.BLACK)
-	draw_multiline_string(font, at, TOUCH_HINT, HORIZONTAL_ALIGNMENT_CENTER, width, hint_size)
+	var rect := _hint_rect()
+	var text := _hint_text()
+	var hint_size := _hint_size()
+	var at := rect.position + Vector2(0, font.get_ascent(hint_size))
+	draw_multiline_string_outline(font, at, text, HORIZONTAL_ALIGNMENT_CENTER, rect.size.x, hint_size, -1, hint_size / 3, Color.BLACK)
+	draw_multiline_string(font, at, text, HORIZONTAL_ALIGNMENT_CENTER, rect.size.x, hint_size)
+
+
+func _hint_showing() -> bool:
+	return session.state.tick < SimConst.COUNTDOWN_TICKS and not _pilot
+
+
+## One thing per line: the hint goes in narrow spaces.
+func _hint_text() -> String:
+	return Controls.hint().replace(" · ", "\n")
+
+
+func _hint_size() -> int:
+	return maxi(HINT_MIN, int(HINT_DP * Controls.dp_scale()))
+
+
+## Where the hint goes: below the countdown between the boards, or beside a board playing alone.
+## A narrow screen has no such space, but the top of your own well is empty until the game starts.
+func _hint_rect() -> Rect2:
+	var view := get_viewport_rect().size
+	var me: Node = _views[session.local_idx]
+	if _narrow(view):
+		var top_left: Vector2 = me.cell_to_screen(Vector2.ZERO)
+		return Rect2(top_left, me.cell_to_screen(Vector2(SimConst.W, HINT_ROWS)) - top_left)
+	var left: Node = _views[0]
+	var pad: float = (left.cell_to_screen(Vector2.RIGHT) - left.cell_to_screen(Vector2.ZERO)).x * HINT_PAD_CELLS
+	var start: float = EDGE_UNITS if _solo() else left.cell_to_screen(Vector2(SimConst.W, SimConst.H)).x + pad
+	var end: float = (left.cell_to_screen(Vector2(0, SimConst.H)).x if _solo()
+			else _views[1].cell_to_screen(Vector2(0, SimConst.H)).x) - pad
+	var y := view.y / 2.0 + EDGE_UNITS
+	return Rect2(start, y, end - start, view.y - y - EDGE_UNITS)
 
 
 func _retry_text() -> String:
 	var again := "retry" if _offline else "rematch"
-	return "   tap for %s" % again if Controls.touch_first else "   swap for %s · %s for title" % [again, Controls.leave_name()]
+	if Controls.tap_word() != "":
+		return "   %s for %s" % [Controls.tap_word(), again]
+	return "   swap for %s · %s for title" % [again, Controls.leave_name()]
 
 
 func _on_desynced(tick: int) -> void:
@@ -360,7 +414,12 @@ func _on_desynced(tick: int) -> void:
 
 
 func _on_opponent_left() -> void:
-	_ended = "Opponent left — %s for title" % ("tap" if Controls.touch_first else Controls.leave_name())
+	_opponent_gone = true
+
+
+func _on_notice(text: String) -> void:
+	_notice = text
+	_notice_msec = Time.get_ticks_msec()
 
 
 ## Every real match is kept: a bug report is a file, and it replays exactly. Up to the last

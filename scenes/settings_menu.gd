@@ -16,6 +16,7 @@ const TAB_CHOSEN := Color(0.25, 0.32, 0.5)
 const FPS_LIMITS := {"Off": 0, "60": 60, "120": 120, "144": 144, "240": 240}
 const RENDERERS := {"3D": "3d", "2D (low detail)": "2d"}
 const DEVICE_WORDS := {"keys": "key", "pad": "button or stick"}
+const CURSORS := {"Swap (two blocks)": "swap", "Grab (one block)": "grab"}
 
 var _column: VBoxContainer
 var _tabs: HFlowContainer
@@ -67,6 +68,8 @@ func _ready() -> void:
 
 	var first := _add_page("Display", _build_display)
 	_add_page("Sound", _build_sound)
+	_add_page("Cursor", _build_cursor)
+	_add_page("Online", _build_online)
 	# The same gestures either way, so name what this player has.
 	if Controls.touch_first:
 		_add_page("Touch", _build_touch)
@@ -177,11 +180,32 @@ func _build_sound(page: Control) -> void:
 				_set_and_apply.bind("audio", row[1]))
 
 
+func _build_cursor(page: Control) -> void:
+	_options(page, "Cursor style", CURSORS, Config.get_value("controls", "cursor"), _set_cursor)
+	_note(page, "Swap uses a two-block cursor: the swap button trades the two blocks in it, and a tap or click trades the two either side of where it lands.")
+	_note(page, "Grab is experimental. Its cursor is one block: press on a block to pick it up, move to carry it along its row, and let go to drop it. On keys and gamepads, hold the swap button to grab and release it to let go.")
+	_note(page, "With a mouse, either cursor follows the pointer over the board, until you use a direction key or button. The swap cursor centres on it. With grab, you can also hold the swap button and carry the block with the pointer.")
+	_note(page, "The rules are the same either way, so you can play anyone. An online opponent sees a two-block cursor.")
+
+
+func _build_online(page: Control) -> void:
+	var edit := LineEdit.new()
+	edit.text = str(Config.get_value("net", "server"))
+	edit.placeholder_text = Net.server_url() if Net.server_url() != "" else "wss://example.com/ws"
+	edit.custom_minimum_size.x = 170.0
+	edit.size_flags_horizontal = SIZE_EXPAND_FILL
+	Controls.size_for_fingers(edit)
+	edit.text_changed.connect(func(text: String) -> void: Config.set_value("net", "server", text.strip_edges()))
+	_row(page, "Match server").add_child(edit)
+	_note(page, "Where Quick match and rooms play. Leave it empty for the game's own server%s." % (
+			", which for this page is the site it came from" if OS.has_feature("web") else ""))
+
+
 func _build_touch(page: Control) -> void:
-	_note(page, "Drag a block to carry it, flick it to swap once, tap to move the cursor, and hold the rising row to raise.")
+	_note(page, "Tap between two blocks to swap them, drag a block to carry it, flick it to swap once, and hold the rising row to raise.")
 	_slider(page, "Pick-up delay", Controls.carry_delay_ms, 50.0, 250.0, 10.0,
 			func(v: float) -> String: return "%d ms" % int(v), _set_carry_delay)
-	_note(page, "How long to rest on a block before moving it counts as a carry. Shorter picks blocks up sooner; longer leaves more time to flick. Default: %d ms." % Config.DEFAULTS.controls.carry_delay_ms)
+	_note(page, "How long to rest on a block before moving it counts as a carry. Shorter picks blocks up sooner; longer leaves more time to flick. Default: %d ms. The grab cursor picks blocks up at once and doesn't use this." % Config.DEFAULTS.controls.carry_delay_ms)
 
 
 func _build_binding_page(page: Control, device: String) -> void:
@@ -240,6 +264,11 @@ func _reset(device: String) -> void:
 func _set_and_apply(value: Variant, section: String, key: String) -> void:
 	Config.set_value(section, key, value)
 	Config.apply()
+
+
+func _set_cursor(style: String) -> void:
+	Config.set_value("controls", "cursor", style)
+	Controls.grab_mode = style == "grab"
 
 
 func _set_carry_delay(ms: float) -> void:
