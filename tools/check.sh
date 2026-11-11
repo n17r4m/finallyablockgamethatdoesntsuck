@@ -39,6 +39,7 @@ run test_match_layout
 run test_leave
 run test_netcode
 run test_golden
+run test_rules
 if command -v python3 > /dev/null; then
 	if python3 tools/replay_check.py tests/golden > /dev/null; then
 		echo "PASS replay_check.py"
@@ -77,7 +78,7 @@ if command -v cargo > /dev/null; then
 	rm -f "$log"
 	# Real sessions through a real match server, over real sockets, in real time.
 	if cargo build --quiet --release --manifest-path rust/Cargo.toml -p fbg-server > "$log" 2>&1; then
-		rust/target/release/fbg-server --listen 127.0.0.1:47199 > /dev/null 2>&1 &
+		rust/target/release/fbg-server --listen 127.0.0.1:47199 --admin off > /dev/null 2>&1 &
 		server=$!
 		sleep 1
 		[ -f .godot/extension_list.cfg ] || "$GODOT" --headless --path . --import > /dev/null 2>&1
