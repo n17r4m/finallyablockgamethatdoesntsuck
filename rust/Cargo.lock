@@ -190,10 +190,15 @@ checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 name = "fbg-godot"
 version = "0.1.0"
 dependencies = [
+ "fbg-proto",
  "fbg-sim",
  "godot 0.4.5",
  "godot 0.5.5",
 ]
+
+[[package]]
+name = "fbg-proto"
+version = "0.1.0"
 
 [[package]]
 name = "fbg-server"
@@ -201,6 +206,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64",
+ "fbg-proto",
  "fbg-sim",
  "futures-util",
  "getrandom 0.3.4",

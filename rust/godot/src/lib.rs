@@ -3,6 +3,8 @@
 //!
 //! GDScript reaches this through ClassDB, not by name, because a build may not have it.
 
+mod wire;
+
 use fbg_sim::{Replay, Rules, State};
 use std::sync::Arc;
 use godot::prelude::*;

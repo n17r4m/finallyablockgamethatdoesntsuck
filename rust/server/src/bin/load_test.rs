@@ -2,7 +2,7 @@
 //! recorded CPU game on repeat in real time, as many times over as asked, at 60 messages a second.
 //!   cargo run --release -p fbg-server --bin load_test -- ws://127.0.0.1:47110 MATCHES SECONDS REPLAY
 
-use fbg_server::protocol::{ClientMsg, InputMsg, ServerMsg, PROTOCOL};
+use fbg_server::protocol::{ClientMsg, InputMsg, List, ServerMsg, PROTOCOL};
 use fbg_sim::consts::{RULES_VERSION, TICK_HZ};
 use fbg_sim::Replay;
 use futures_util::{SinkExt, StreamExt};
@@ -18,13 +18,13 @@ async fn play(url: String, room: String, seat: usize, replay: Arc<Replay>, secon
         return;
     };
     let (mut tx, mut rx) = socket.split();
-    let hello = ClientMsg::Hello { protocol: PROTOCOL, rules: RULES_VERSION, tick_hz: TICK_HZ, name: "load".into(), platform: "load_test".into() };
+    let hello = ClientMsg::Hello { protocol: PROTOCOL, engine: RULES_VERSION as u32, tick_hz: TICK_HZ as u32, name: "load".into(), platform: "load_test".into(), features: 0 };
     let _ = tx.send(Message::binary(hello.encode())).await;
-    let _ = tx.send(Message::binary(ClientMsg::Room(room).encode())).await;
+    let _ = tx.send(Message::binary(ClientMsg::Room { code: room.as_str().into(), rules: vec![] }.encode())).await;
     // Waits for the start, then listens while it plays.
     loop {
         let Some(Ok(Message::Binary(b))) = rx.next().await else { return };
-        if matches!(ServerMsg::decode(&b), Some(ServerMsg::Start { .. })) {
+        if matches!(ServerMsg::read(&b), Some(ServerMsg::Start { .. })) {
             break;
         }
     }
@@ -32,7 +32,7 @@ async fn play(url: String, room: String, seat: usize, replay: Arc<Replay>, secon
         let mut seen = Vec::new();
         while let Some(Ok(Message::Binary(b))) = rx.next().await {
             // The sender's clock travels in `advantage`: this tool's clients share one.
-            if let Some(ServerMsg::Input(m)) = ServerMsg::decode(&b) {
+            if let Some(ServerMsg::Input(m)) = ServerMsg::read(&b) {
                 seen.push((clock.elapsed().as_micros() as i64 - m.advantage).max(0) as u64);
             }
         }
@@ -45,12 +45,12 @@ async fn play(url: String, room: String, seat: usize, replay: Arc<Replay>, secon
     while Instant::now() < end && (tick as u64) + (TICKS_PER_MESSAGE as u64) < replay.end_tick {
         pace.tick().await;
         tick += TICKS_PER_MESSAGE;
-        let mut changes = Vec::new();
+        let mut changes = List::default();
         while let Some(e) = replay.inputs[seat].get(next).filter(|e| (e.tick as i64) < tick) {
             changes.push((e.tick as i64, e.mask as i32));
             next += 1;
         }
-        let m = InputMsg { frontier: tick - 1, ack: -1, tick, advantage: clock.elapsed().as_micros() as i64, changes, checks: vec![] };
+        let m = InputMsg { frontier: tick - 1, ack: -1, tick, advantage: clock.elapsed().as_micros() as i64, changes, ..Default::default() };
         if tx.send(Message::binary(ClientMsg::Input(m).encode())).await.is_err() {
             break;
         }

@@ -1,7 +1,7 @@
 //! What the referee decides, with no sockets or clocks: honest games agree with the recorded
 //! corpus, and each way of lying ends the match against the liar and nobody else.
 
-use fbg_server::protocol::{ClientMsg, EndReason, InputMsg, ServerMsg};
+use fbg_server::protocol::{ClientMsg, EndReason, InputMsg, List};
 use fbg_server::referee::{Referee, MAX_FUTURE, STALL_LIMIT};
 use fbg_sim::consts::{SWAP, TICK_HZ};
 use fbg_sim::{Replay, State};
@@ -16,7 +16,7 @@ fn corpus(name: &str) -> Replay {
 }
 
 fn msg(frontier: i64, changes: Vec<(i64, i32)>, checks: Vec<(i64, i64)>) -> InputMsg {
-    InputMsg { frontier, ack: -1, tick: frontier, advantage: 0, changes, checks }
+    InputMsg { seat: 0, frontier, ack: -1, tick: frontier, advantage: 0, changes: List::of(&changes), checks: List::of(&checks) }
 }
 
 /// Plays a recorded game through the referee in one-second batches, both players honest.
@@ -228,7 +228,7 @@ fn nothing_after_the_end_changes_the_outcome() {
 }
 
 #[test]
-fn hostile_bytes_never_panic() {
+fn hostile_bytes_never_reach_the_referee_as_anything_it_cant_take() {
     let mut x = 0x2545F4914F6CDD1Du64;
     let mut next = move || {
         x ^= x << 13;
@@ -237,9 +237,8 @@ fn hostile_bytes_never_panic() {
         x
     };
     let real = [
-        ClientMsg::Hello { protocol: 2, rules: 1, tick_hz: 720, name: "Ünïcode name".into(), platform: "web".into() }.encode(),
-        ClientMsg::Room("ABC123".into()).encode(),
         ClientMsg::Input(msg(10, vec![(5, 1)], vec![(720, 9)])).encode(),
+        ClientMsg::Input(msg(720, vec![(5, 1), (700, 1 << 16), (719, 32)], vec![(720, 9), (360, -1)])).encode(),
     ];
     for _ in 0..200_000 {
         let mut b = real[next() as usize % real.len()].clone();
@@ -248,64 +247,20 @@ fn hostile_bytes_never_panic() {
             b[i] = next() as u8;
         }
         b.truncate(next() as usize % (b.len() + 1));
-        if let Some(ClientMsg::Input(m)) = ClientMsg::decode(&b) {
+        if let Some(ClientMsg::Input(m)) = ClientMsg::read(&b) {
             let mut r = Referee::new(1);
             r.input(0, &m, 100);
             r.input(1, &m, 100);
         }
-        let _ = ServerMsg::decode(&b);
-    }
-    // A count claiming far more than the message holds.
-    let mut lying = ClientMsg::Input(InputMsg::default()).encode();
-    lying[33] = 0xFF;
-    lying[34] = 0x00;
-    assert_eq!(ClientMsg::decode(&lying), None);
-}
-
-#[test]
-fn every_message_survives_the_trip() {
-    let input = InputMsg { frontier: 9, ack: -1, tick: 4, advantage: 1 << 40, changes: vec![(1, 2), (3, -4)], checks: vec![(720, -5)] };
-    for m in [
-        ClientMsg::Hello { protocol: 1, rules: 2, tick_hz: 720, name: "Ann".into(), platform: "android".into() },
-        ClientMsg::Queue,
-        ClientMsg::Room("A1".into()),
-        ClientMsg::Input(input.clone()),
-        ClientMsg::Rematch,
-        ClientMsg::Ping(u64::MAX),
-    ] {
-        assert_eq!(ClientMsg::decode(&m.encode()), Some(m));
-    }
-    for m in [
-        ServerMsg::Welcome,
-        ServerMsg::Refused("no".into()),
-        ServerMsg::Waiting,
-        ServerMsg::Start { match_id: 7, seed: 1 << 31, seat: 1, opponent: "Bob".into() },
-        ServerMsg::Input(input),
-        ServerMsg::Result { winner: 2, reason: EndReason::TooLong, tick: 5 },
-        ServerMsg::Pong(1),
-        ServerMsg::OpponentLeft,
-        ServerMsg::Notice("Back in five".into()),
-        ServerMsg::Result { winner: 2, reason: EndReason::Ended, tick: 1 },
-    ] {
-        assert_eq!(ServerMsg::decode(&m.encode()), Some(m));
     }
 }
 
 #[test]
 fn text_is_cut_on_a_character_boundary_and_names_are_cleaned() {
     let long = "é".repeat(40); // 80 bytes
-    let bytes = ClientMsg::Hello { protocol: 2, rules: 1, tick_hz: 720, name: long, platform: "linux".into() }.encode();
-    let Some(ClientMsg::Hello { name, .. }) = ClientMsg::decode(&bytes) else { panic!("didn't decode") };
-    assert_eq!(name, "é".repeat(12));
+    let bytes = ClientMsg::Hello { protocol: 3, engine: 1, tick_hz: 720, name: long.as_str().into(), platform: "linux".into(), features: 0 }.encode();
+    let Some(ClientMsg::Hello { name, .. }) = ClientMsg::read(&bytes) else { panic!("didn't decode") };
+    assert_eq!(name.as_str(), "é".repeat(12));
     assert_eq!(fbg_server::protocol::clean_name("  \u{7}Zed\n "), "Zed");
     assert_eq!(fbg_server::protocol::clean_name(" \t "), "Player");
-}
-
-#[test]
-fn an_old_hello_still_decodes_so_it_can_be_told_to_update() {
-    let mut old = vec![1u8];
-    for v in [1u16, 1, 720] {
-        old.extend_from_slice(&v.to_le_bytes());
-    }
-    assert!(matches!(ClientMsg::decode(&old), Some(ClientMsg::Hello { protocol: 1, .. })));
 }

@@ -19,8 +19,9 @@ Running it for real, with its admin console: [server-admin.md](server-admin.md).
 
 - **Who plays whom.** The first two in the queue, or the two with the same room code.
 - **The seed.** Neither player gets to choose a board they've practised.
-- **Whether versions match.** A different protocol, rule version or tick rate is refused at the
-  door, with a reason the player can read.
+- **Whether versions match.** A different protocol, engine version or tick rate is refused at
+  the door, with a reason the player can read.
+- **What rules a match plays by.** Standard, or a room host's, checked before anyone plays.
 - **What each player sees of the other.** Everything goes through the server, so a player can't
   tell the two ends different things, and a message that breaks the rules is never passed on.
 - **The result.** The referee plays the match on `rust/sim` from the inputs it relays. It runs
@@ -48,42 +49,66 @@ runs out of room to predict shortly after and stops through no fault of its own.
 
 ## Messages
 
-One binary WebSocket frame is one message, little-endian, with the first byte saying which.
-Anything malformed closes the connection. So does anything before a hello.
+Protocol 3. The code is `rust/proto` (`fbg-proto`): the server uses it directly, and the game
+through the Godot extension (`FbgWire`, behind `net/server_link.gd`), so both ends run the same
+code. A build without the extension can't play online.
+
+One binary WebSocket frame is one message: a message number (varint), then the message's
+fields in protobuf's wire encoding. Each field is a tag (field number << 3 | wire type) and a
+value; protobuf's own tools can read a message's fields (`protoc --decode_raw`, after the first
+byte). A field left out is 0, empty or false, and zeros aren't written.
+
+**How it grows.** A reader skips fields and messages it doesn't know, so adding either is never
+a break: an older game ignores what's new, and a newer one finds it missing. What each side can
+do beyond the core is in `features`, a bit set in the hello and the welcome, and neither sends
+what the other didn't say it understands. Changing what a field means, or taking one away, is a
+new protocol number, and the server refuses other numbers with a request to update.
+
+**Damage** (a length past the end, a wire type that can't be, a limit broken) closes the
+connection. So does anything before a hello. An unknown message is ignored.
+
+Types: **uint** varint; **sint** zigzag varint; **fixed64** 8 bytes, for seeds and hashes;
+**bytes**/**text** length-prefixed, text UTF-8. Field numbers in brackets.
 
 **Game to server**
 
-| Byte | Message | Then |
+| # | Message | Fields |
 |---|---|---|
-| 1 | Hello | protocol u16, rules u16, tick rate u16, name (text, up to 24 bytes), platform (text, up to 16 bytes of letters, digits, `.` and `_`) |
-| 2 | Quick match | |
-| 3 | Room | length u8 (1-16), code (ASCII letters and digits, case ignored) |
+| 1 | Hello | protocol [1], engine [2] (`RULES_VERSION`), tick rate [3], name [4] (text, up to 24 bytes), platform [5] (up to 16 bytes of letters, digits, `.` and `_`), features [6] |
+| 2 | Quick match | mode [1]: 0 is standard 1v1, the only one so far |
+| 3 | Room | code [1] (1-16 ASCII letters and digits, case ignored), rules [2] (a ruleset's bytes; empty for standard) |
 | 4 | Input | see below |
 | 5 | Rematch | |
-| 6 | Ping | any 8 bytes |
+| 6 | Ping | time [1] |
 
 **Server to game**
 
-| Byte | Message | Then |
+| # | Message | Fields |
 |---|---|---|
-| 64 | Welcome | |
-| 65 | Refused | length u8, reason (UTF-8). The connection then closes |
-| 66 | Waiting | |
-| 67 | Start | match id u64, seed i64, seat u8, the opponent's name (text) |
-| 68 | Input | see below, the other player's |
-| 69 | Result | winner u8 (0, 1, or 2 for a draw), reason u8 (the table above, in order), tick i64 |
-| 70 | Pong | the 8 bytes from the ping |
-| 71 | Opponent left | The player is back in the lobby |
-| 72 | Notice | text, up to 200 bytes: a message from whoever runs the server, to show the player |
+| 16 | Welcome | features [1] |
+| 17 | Refused | code [1]: 0 other, 1 update, 2 draining, 3 banned, 4 full, 5 bad rules; text [2]. The connection then closes |
+| 18 | Waiting | room [1], empty in the queue |
+| 19 | Start | match id [1], seed [2] fixed64, your seat [3], rules [4] (empty: standard), seats [5], repeated: each a message of name [1], team [2], platform [3] |
+| 20 | Input | the same as the game's, with seat [1] saying whose |
+| 21 | Result | winner [1] (a seat), reason [2] (the table above, in order), tick [3] sint, draw [4] |
+| 22 | Pong | time [1], from the ping |
+| 23 | Left | seat [1]: that player left after the game, and this one is back in the lobby |
+| 24 | Notice | text [1], up to 200 bytes: from whoever runs the server, to show the player |
 
-**Text** is a length u8 then that many bytes of UTF-8. The server cuts names to 24 bytes on a
-character boundary, drops control characters, and calls an empty name "Player". A protocol 1
-hello (no name or platform) still decodes, so an old game is told to update rather than dropped.
+**Features**: bit 0, custom rules. A room's first player hosts it, and the host's rules are the
+match's; the server checks them with the same code the sims run (`Rules::decode`) and turns away
+anything that isn't a playable ruleset. A game that didn't say it can play custom rules is told
+it can't join such a room, and stays in the lobby. Rematches keep the rules.
 
-**Input**, the same both ways: frontier i64, acknowledged i64, sender's tick i64, advantage i64,
-change count u16 (up to 256), then for each change tick i64 and mask i32, then hash count u8 (up
-to 16), then for each hash tick i64 and hash i64. These mean what they mean in
-`sim/rollback_session.gd`.
+**Input**, both ways: seat [1] uint, frontier [2] sint, then relative to the frontier: acknowledged
+[3] sint, the sender's tick [4] sint; advantage [5] sint; change ticks [6] packed sint, each from
+the one before (the first from the frontier); change masks [7] packed uint (32 bits); check ticks
+[8] packed sint, the same way; check hashes [9] packed fixed64. Up to 256 changes and 16 checks,
+and ticks and masks pair up. These mean what they mean in `sim/rollback_session.gd`. A typical
+input is about 17 bytes, against 47 in protocol 2, and reading one allocates nothing.
+
+**Text**: the server cuts names to 24 bytes on a character boundary, drops control characters,
+and calls an empty name "Player".
 
 ## Measured
 
@@ -115,4 +140,5 @@ warn about it. All matches share one task, which is the limit to lift first.
   happened under the rules, not who pressed the buttons.
 - **There are no accounts, ranks or matchmaking by skill,** and a room code is only as private
   as whoever you tell it to. Names are whatever the player typed.
-- **Replays pile up** in `--replays` with nothing clearing them.
+- **Replays pile up** in `--replays` with nothing clearing them, and a match on custom rules
+  isn't saved at all yet: replay files can't hold a ruleset.

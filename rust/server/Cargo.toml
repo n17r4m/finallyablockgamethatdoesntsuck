@@ -8,6 +8,7 @@ description = "Pairs players, relays their inputs and referees their matches wit
 [dependencies]
 axum = "0.8"
 base64 = "0.22"
+fbg-proto = { path = "../proto" }
 fbg-sim = { path = "../sim" }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 getrandom = "0.3"

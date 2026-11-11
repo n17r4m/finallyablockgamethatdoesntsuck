@@ -130,3 +130,13 @@ fn decode_refuses_without_panicking() {
         let _ = Rules::decode(&b);
     }
 }
+
+#[test]
+fn the_largest_ruleset_is_max_bytes() {
+    let mut r = Rules::standard();
+    r.rise = curve(Fill::Linear, true, &(0..MAX_POINTS as i32).map(|k| (k, k)).collect::<Vec<_>>());
+    r.chain_rows = curve(Fill::Step, false, &(0..MAX_POINTS as i32).map(|k| (k + 1, 1)).collect::<Vec<_>>());
+    r.combo = vec![vec![1; MAX_ENTRIES]; MAX_ENTRIES];
+    r.validate().unwrap();
+    assert_eq!(r.encode().len(), MAX_BYTES);
+}

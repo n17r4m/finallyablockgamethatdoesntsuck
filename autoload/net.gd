@@ -15,6 +15,10 @@ var hosting := false
 var remote_id := 0
 var rtt_ms := 0.0
 var match_seed := 0
+## What the match plays by: the server's, the host's, or the practice rules. null: standard.
+var match_rules: SimRules = null
+## What practice and CPU matches play by. null: standard.
+var practice_rules: SimRules = null
 var local_idx := 0
 var cpu_name := "" # offline opponent; "" = endless solo
 var cpu_level := "normal"
@@ -116,17 +120,21 @@ static func new_room_code() -> String:
 
 
 ## Online through the public match server: quick match, or a room with a friend.
-func play_online(room_code := "") -> Error:
+func play_online(room_code := "", room_rules: SimRules = null) -> Error:
 	var url := server_url()
 	if url == "":
 		status.emit("No match server set: add one under Settings")
 		return ERR_UNCONFIGURED
-	return connect_server(url, room_code)
+	return connect_server(url, room_code, room_rules)
 
 
-## Through the match server. An empty room means quick match against whoever's waiting.
-func connect_server(url: String, room_code := "") -> Error:
+## Through the match server. An empty room means quick match against whoever's waiting. A
+## room's first player hosts it, on room_rules (null: standard).
+func connect_server(url: String, room_code := "", room_rules: SimRules = null) -> Error:
 	leave()
+	if not ServerLink.available():
+		status.emit("Online play isn't in this build of the game")
+		return ERR_UNAVAILABLE
 	var link := ServerLink.new()
 	link.player_name = str(Config.get_value("player", "name"))
 	var err := link.open(url)
@@ -138,7 +146,7 @@ func connect_server(url: String, room_code := "") -> Error:
 		if room_code == "":
 			link.queue()
 		else:
-			link.room(room_code))
+			link.room(room_code, room_rules))
 	link.refused.connect(func(why: String) -> void:
 		leave()
 		status.emit(why))
@@ -187,6 +195,7 @@ func start_practice(name := cpu_name, level := cpu_level) -> void:
 	cpu_name = name
 	cpu_level = level
 	match_seed = randi()
+	match_rules = practice_rules
 	local_idx = 0
 	match_started.emit()
 
@@ -218,6 +227,7 @@ func start_match() -> void:
 	if remote_id == 0:
 		return
 	match_seed = randi()
+	match_rules = null # LAN plays standard for now
 	local_idx = 0
 	gone_why = ""
 	_start.rpc_id(remote_id, match_seed)
@@ -249,6 +259,7 @@ func _on_server_start(_match_id: int, game_seed: int, seat: int) -> void:
 	opponent_name = _link.opponent_name if _link else ""
 	gone_why = ""
 	match_seed = game_seed
+	match_rules = _link.rules if _link else null
 	local_idx = seat
 	match_started.emit()
 
@@ -312,6 +323,7 @@ func _start(game_seed: int) -> void:
 	remote_id = multiplayer.get_remote_sender_id()
 	gone_why = ""
 	match_seed = game_seed
+	match_rules = null
 	local_idx = 1
 	match_started.emit()
 

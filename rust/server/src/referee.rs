@@ -8,7 +8,8 @@
 use crate::protocol::{EndReason, InputMsg};
 use fbg_sim::consts::{INPUT_BITS, RULES_VERSION, TICK_HZ};
 use fbg_sim::replay::{InputEvent, MAX_TICKS};
-use fbg_sim::{Replay, State};
+use fbg_sim::{Replay, Rules, State};
+use std::sync::Arc;
 use std::collections::BTreeMap;
 
 const HZ: i64 = TICK_HZ as i64;
@@ -44,8 +45,14 @@ pub struct Referee {
 }
 
 impl Referee {
+    /// A match on the standard rules.
     pub fn new(seed: i64) -> Referee {
-        let state = State::new(seed, false);
+        Referee::with_rules(seed, Rules::shared_standard())
+    }
+
+    /// A match on these rules, which must be valid.
+    pub fn with_rules(seed: i64, rules: Arc<Rules>) -> Referee {
+        let state = State::with_rules(seed, false, rules);
         Referee {
             seed,
             start_hash: state.checksum(),
@@ -208,7 +215,12 @@ impl Referee {
 
     /// The match as a replay anyone can check, up to the last point the referee hashed. None
     /// if it ended before the first hash.
+    /// None until the match has a checkpoint, and for a match on custom rules, which replay
+    /// files can't hold yet.
     pub fn replay(&self) -> Option<Replay> {
+        if !Arc::ptr_eq(&self.state.rules, &Rules::shared_standard()) && *self.state.rules != *Rules::shared_standard() {
+            return None;
+        }
         let mut checkpoints = self.own_checks.clone();
         if self.state.winner != -1 && checkpoints.last().map(|c| c.0) != Some(self.state.tick as u64) {
             checkpoints.push((self.state.tick as u64, self.state.checksum()));

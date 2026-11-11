@@ -157,6 +157,9 @@ pub struct Rules {
     pub combo: Vec<Vec<u8>>,
 }
 
+/// The most bytes a valid ruleset can take: every curve and table at its longest.
+pub const MAX_BYTES: usize = 4 + 3 + 20 * 4 + 2 * (3 + MAX_POINTS * 8) + 2 + MAX_ENTRIES * (1 + MAX_ENTRIES);
+
 /// A clear is at least three panels.
 pub const MIN_CLEAR: u8 = 3;
 /// A byte counts entries, and a byte counts the slabs in each.

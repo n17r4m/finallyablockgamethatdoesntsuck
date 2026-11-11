@@ -70,3 +70,10 @@ inputs plus an incoming garbage stream, which coupled modes feed from inside the
 5. **Lobby and ruleset editor**, and a match layout for N boards.
 
 Then Rumble (variable width), modes and queues, accounts and ranks, battle royale.
+
+**Protocol 3** (built 2026-11-11) is the wire for all of it: one Rust crate (`rust/proto`) for
+the server and, through the extension, the game; protobuf's wire encoding with a codec of our
+own, so messages grow without breaking anyone; seats instead of "the opponent"; rooms that carry
+the host's ruleset. Still to come on it: a resume token so a dropped phone gets its seat back,
+and a direct WebRTC link between players alongside the server's socket. The server stays the
+referee and the record either way; the direct link only gets inputs there sooner.

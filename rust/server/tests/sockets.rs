@@ -1,6 +1,6 @@
 //! A real server on a real socket, with clients that speak the protocol byte for byte.
 
-use fbg_server::protocol::{ClientMsg, EndReason, InputMsg, ServerMsg, PROTOCOL};
+use fbg_server::protocol::{ClientMsg, EndReason, InputMsg, List, ServerMsg, PROTOCOL};
 use fbg_server::{serve, Config};
 use fbg_sim::consts::{RULES_VERSION, TICK_HZ};
 use fbg_sim::{Replay, State};
@@ -32,7 +32,7 @@ impl Client {
     async fn recv(&mut self) -> Option<ServerMsg> {
         loop {
             match timeout(WAIT, self.0.next()).await.expect("the server went quiet") {
-                Some(Ok(Message::Binary(b))) => return Some(ServerMsg::decode(&b).expect("the server sent junk")),
+                Some(Ok(Message::Binary(b))) => return Some(ServerMsg::read(&b).expect("the server sent junk")),
                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return None,
                 Some(Ok(_)) => {}
             }
@@ -46,7 +46,7 @@ impl Client {
     async fn hello_as(url: &str, name: &str) -> Client {
         let mut c = Client::connect(url).await;
         c.send(hello(name)).await;
-        assert_eq!(c.recv().await, Some(ServerMsg::Welcome));
+        assert!(matches!(c.recv().await, Some(ServerMsg::Welcome { .. })));
         c
     }
 
@@ -62,7 +62,7 @@ impl Client {
 }
 
 fn hello(name: &str) -> ClientMsg {
-    ClientMsg::Hello { protocol: PROTOCOL, rules: RULES_VERSION, tick_hz: TICK_HZ, name: name.into(), platform: "test".into() }
+    ClientMsg::Hello { protocol: PROTOCOL, engine: RULES_VERSION as u32, tick_hz: TICK_HZ as u32, name: name.into(), platform: "test".into(), features: 1 }
 }
 
 async fn start_server(config: Config) -> String {
@@ -75,9 +75,9 @@ async fn start_server(config: Config) -> String {
 /// Two clients in a match by way of a room, returning them and the seed.
 async fn pair(url: &str, code: &str) -> (Client, Client, i64) {
     let (mut a, mut b) = (Client::hello(url).await, Client::hello(url).await);
-    a.send(ClientMsg::Room(code.into())).await;
-    assert_eq!(a.recv().await, Some(ServerMsg::Waiting));
-    b.send(ClientMsg::Room(code.into())).await;
+    a.send(ClientMsg::Room { code: code.into(), rules: vec![] }).await;
+    assert!(matches!(a.recv().await, Some(ServerMsg::Waiting { .. })));
+    b.send(ClientMsg::Room { code: code.into(), rules: vec![] }).await;
     let (sa, sb) = (a.recv().await.unwrap(), b.recv().await.unwrap());
     let (ServerMsg::Start { match_id: ma, seed: x, seat: 0, .. }, ServerMsg::Start { match_id: mb, seed: y, seat: 1, .. }) = (sa, sb) else {
         panic!("expected seats 0 and 1");
@@ -89,10 +89,10 @@ async fn pair(url: &str, code: &str) -> (Client, Client, i64) {
 #[tokio::test]
 async fn a_wrong_version_is_told_why_and_closed() {
     let url = start_server(Config::default()).await;
-    for (protocol, rules, says) in [(PROTOCOL + 1, RULES_VERSION, "protocol"), (PROTOCOL, RULES_VERSION + 1, "rules")] {
+    for (protocol, engine, says) in [(PROTOCOL + 1, RULES_VERSION as u32, "protocol"), (PROTOCOL, RULES_VERSION as u32 + 1, "engine")] {
         let mut c = Client::connect(&url).await;
-        c.send(ClientMsg::Hello { protocol, rules, tick_hz: TICK_HZ, name: String::new(), platform: String::new() }).await;
-        let Some(ServerMsg::Refused(why)) = c.recv().await else { panic!("expected a refusal") };
+        c.send(ClientMsg::Hello { protocol, engine, tick_hz: TICK_HZ as u32, name: "".into(), platform: "".into(), features: 0 }).await;
+        let Some(ServerMsg::Refused { text: why, .. }) = c.recv().await else { panic!("expected a refusal") };
         assert!(why.contains(says), "{why}");
         assert_eq!(c.recv().await, None);
     }
@@ -104,9 +104,9 @@ async fn the_queue_pairs_players_and_each_match_gets_its_own_seed() {
     let mut seeds = vec![];
     for _ in 0..4 {
         let (mut a, mut b) = (Client::hello(&url).await, Client::hello(&url).await);
-        a.send(ClientMsg::Queue).await;
-        assert_eq!(a.recv().await, Some(ServerMsg::Waiting));
-        b.send(ClientMsg::Queue).await;
+        a.send(ClientMsg::Queue { mode: 0 }).await;
+        assert!(matches!(a.recv().await, Some(ServerMsg::Waiting { .. })));
+        b.send(ClientMsg::Queue { mode: 0 }).await;
         let Some(ServerMsg::Start { seed, .. }) = a.recv().await else { panic!() };
         seeds.push(seed);
     }
@@ -118,11 +118,11 @@ async fn the_queue_pairs_players_and_each_match_gets_its_own_seed() {
 async fn room_codes_keep_games_apart() {
     let url = start_server(Config::default()).await;
     let (mut a, mut b, mut c) = (Client::hello(&url).await, Client::hello(&url).await, Client::hello(&url).await);
-    a.send(ClientMsg::Room("ONE".into())).await;
-    assert_eq!(a.recv().await, Some(ServerMsg::Waiting));
-    b.send(ClientMsg::Room("TWO".into())).await;
-    assert_eq!(b.recv().await, Some(ServerMsg::Waiting));
-    c.send(ClientMsg::Room("one".into())).await; // codes ignore case
+    a.send(ClientMsg::Room { code: "ONE".into(), rules: vec![] }).await;
+    assert!(matches!(a.recv().await, Some(ServerMsg::Waiting { .. })));
+    b.send(ClientMsg::Room { code: "TWO".into(), rules: vec![] }).await;
+    assert!(matches!(b.recv().await, Some(ServerMsg::Waiting { .. })));
+    c.send(ClientMsg::Room { code: "one".into(), rules: vec![] }).await; // codes ignore case
     assert!(matches!(c.recv().await, Some(ServerMsg::Start { seat: 1, .. })));
     assert!(matches!(a.recv().await, Some(ServerMsg::Start { seat: 0, .. })));
 }
@@ -131,7 +131,7 @@ async fn room_codes_keep_games_apart() {
 async fn inputs_reach_the_other_player_unchanged() {
     let url = start_server(Config::default()).await;
     let (mut a, mut b, _) = pair(&url, "RELAY").await;
-    let m = InputMsg { frontier: 30, ack: -1, tick: 6, advantage: 3, changes: vec![(29, 16)], checks: vec![] };
+    let m = InputMsg { seat: 0, frontier: 30, ack: -1, tick: 6, advantage: 3, changes: vec![(29, 16)].into(), checks: vec![].into() };
     a.send(ClientMsg::Input(m.clone())).await;
     assert_eq!(b.recv().await, Some(ServerMsg::Input(m)));
 }
@@ -140,9 +140,9 @@ async fn inputs_reach_the_other_player_unchanged() {
 async fn a_message_that_breaks_the_rules_never_reaches_the_other_player() {
     let url = start_server(Config::default()).await;
     let (mut a, mut b, _) = pair(&url, "BAD").await;
-    let m = InputMsg { frontier: 5, changes: vec![(1, 1 << 30)], ..Default::default() };
+    let m = InputMsg { frontier: 5, changes: vec![(1, 1 << 30)].into(), ..Default::default() };
     a.send(ClientMsg::Input(m)).await;
-    assert_eq!(b.recv().await, Some(ServerMsg::Result { winner: 1, reason: EndReason::BadInput, tick: 0 }));
+    assert_eq!(b.recv().await, Some(ServerMsg::Result { winner: 1, draw: false, reason: EndReason::BadInput, tick: 0 }));
     assert!(matches!(a.recv().await, Some(ServerMsg::Result { winner: 1, .. })));
 }
 
@@ -152,9 +152,9 @@ async fn leaving_forfeits_and_the_other_player_can_play_on() {
     let (a, mut b, _) = pair(&url, "LEAVE").await;
     drop(a);
     assert!(matches!(b.recv().await, Some(ServerMsg::Result { winner: 1, reason: EndReason::Left, .. })));
-    assert_eq!(b.recv().await, Some(ServerMsg::OpponentLeft));
-    b.send(ClientMsg::Queue).await;
-    assert_eq!(b.recv().await, Some(ServerMsg::Waiting));
+    assert_eq!(b.recv().await, Some(ServerMsg::Left { seat: 0 }));
+    b.send(ClientMsg::Queue { mode: 0 }).await;
+    assert!(matches!(b.recv().await, Some(ServerMsg::Waiting { .. })));
 }
 
 #[tokio::test]
@@ -163,7 +163,7 @@ async fn inputs_still_in_flight_when_an_opponent_leaves_are_not_punished() {
     let (a, mut b, _) = pair(&url, "LATE").await;
     drop(a);
     assert!(matches!(b.recv().await, Some(ServerMsg::Result { .. })));
-    assert_eq!(b.recv().await, Some(ServerMsg::OpponentLeft));
+    assert_eq!(b.recv().await, Some(ServerMsg::Left { seat: 0 }));
     b.send(ClientMsg::Input(InputMsg::default())).await;
     b.send(ClientMsg::Rematch).await;
     b.send(ClientMsg::Ping(1)).await;
@@ -174,13 +174,13 @@ async fn inputs_still_in_flight_when_an_opponent_leaves_are_not_punished() {
 async fn someone_who_gives_up_waiting_is_not_matched() {
     let url = start_server(Config::default()).await;
     let mut gone = Client::hello(&url).await;
-    gone.send(ClientMsg::Queue).await;
-    assert_eq!(gone.recv().await, Some(ServerMsg::Waiting));
+    gone.send(ClientMsg::Queue { mode: 0 }).await;
+    assert!(matches!(gone.recv().await, Some(ServerMsg::Waiting { .. })));
     drop(gone);
     tokio::time::sleep(Duration::from_millis(100)).await;
     let mut c = Client::hello(&url).await;
-    c.send(ClientMsg::Queue).await;
-    assert_eq!(c.recv().await, Some(ServerMsg::Waiting));
+    c.send(ClientMsg::Queue { mode: 0 }).await;
+    assert!(matches!(c.recv().await, Some(ServerMsg::Waiting { .. })));
 }
 
 #[tokio::test]
@@ -200,7 +200,7 @@ async fn junk_costs_the_sender_its_connection_and_nobody_else_anything() {
     c.raw(vec![0; 1 << 20]).await;
     assert_eq!(c.recv().await, None);
     // Anything before saying hello.
-    for early in [ClientMsg::Queue, ClientMsg::Room("A".into()), ClientMsg::Input(InputMsg::default()), ClientMsg::Rematch] {
+    for early in [ClientMsg::Queue { mode: 0 }, ClientMsg::Room { code: "A".into(), rules: vec![] }, ClientMsg::Input(InputMsg::default()), ClientMsg::Rematch] {
         let mut c = Client::connect(&url).await;
         c.send(early).await;
         assert_eq!(c.recv().await, None);
@@ -210,14 +210,14 @@ async fn junk_costs_the_sender_its_connection_and_nobody_else_anything() {
     c.send(hello("Twice")).await;
     assert_eq!(c.recv().await, None);
     let mut c = Client::hello(&url).await;
-    c.send(ClientMsg::Queue).await;
-    assert_eq!(c.recv().await, Some(ServerMsg::Waiting));
-    c.send(ClientMsg::Queue).await;
+    c.send(ClientMsg::Queue { mode: 0 }).await;
+    assert!(matches!(c.recv().await, Some(ServerMsg::Waiting { .. })));
+    c.send(ClientMsg::Queue { mode: 0 }).await;
     assert_eq!(c.recv().await, None);
 
     a.send(ClientMsg::Ping(42)).await;
     assert_eq!(a.recv().await, Some(ServerMsg::Pong(42)));
-    let m = InputMsg { frontier: 1, ack: -1, ..Default::default() };
+    let m = InputMsg { seat: 0, frontier: 1, ack: -1, ..Default::default() };
     a.send(ClientMsg::Input(m.clone())).await;
     assert_eq!(b.recv().await, Some(ServerMsg::Input(m)));
 }
@@ -245,7 +245,7 @@ async fn a_full_server_says_so() {
     let url = start_server(Config { max_connections: 1, ..Config::default() }).await;
     let _first = Client::hello(&url).await;
     let mut second = Client::connect(&url).await;
-    assert!(matches!(second.recv().await, Some(ServerMsg::Refused(_))));
+    assert!(matches!(second.recv().await, Some(ServerMsg::Refused { text: _, .. })));
     assert_eq!(second.recv().await, None);
 }
 
@@ -263,21 +263,21 @@ async fn a_whole_match_ends_on_the_refereed_result_and_saves_a_replay() {
     // test only needs a short game, so it forfeits by hash if it can't finish.
     let mut sim = State::new(seed, false);
     let hz = i64::from(TICK_HZ);
-    let mut changes = vec![(0i64, 32i32)];
+    let mut changes: List<(i64, i32), 256> = List::of(&[(0i64, 32i32)]);
     while sim.tick < hz {
         sim.step(32, 0);
     }
-    a.send(ClientMsg::Input(InputMsg { frontier: hz - 1, ack: -1, tick: hz, advantage: 0, changes: std::mem::take(&mut changes), checks: vec![(hz, sim.checksum())] })).await;
-    b.send(ClientMsg::Input(InputMsg { frontier: hz - 1, ack: -1, tick: hz, advantage: 0, changes: vec![], checks: vec![(hz, sim.checksum())] })).await;
+    a.send(ClientMsg::Input(InputMsg { seat: 0, frontier: hz - 1, ack: -1, tick: hz, advantage: 0, changes: std::mem::take(&mut changes), checks: vec![(hz, sim.checksum())].into() })).await;
+    b.send(ClientMsg::Input(InputMsg { seat: 0, frontier: hz - 1, ack: -1, tick: hz, advantage: 0, changes: vec![].into(), checks: vec![(hz, sim.checksum())].into() })).await;
     // b lies about the next second, and a tells the truth. The referee should say so.
     while sim.tick < 2 * hz {
         sim.step(32, 0);
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
-    a.send(ClientMsg::Input(InputMsg { frontier: 2 * hz - 1, ack: -1, tick: 2 * hz, advantage: 0, changes: vec![], checks: vec![(2 * hz, sim.checksum())] })).await;
-    b.send(ClientMsg::Input(InputMsg { frontier: 2 * hz - 1, ack: -1, tick: 2 * hz, advantage: 0, changes: vec![], checks: vec![(2 * hz, !sim.checksum())] })).await;
+    a.send(ClientMsg::Input(InputMsg { seat: 0, frontier: 2 * hz - 1, ack: -1, tick: 2 * hz, advantage: 0, changes: vec![].into(), checks: vec![(2 * hz, sim.checksum())].into() })).await;
+    b.send(ClientMsg::Input(InputMsg { seat: 0, frontier: 2 * hz - 1, ack: -1, tick: 2 * hz, advantage: 0, changes: vec![].into(), checks: vec![(2 * hz, !sim.checksum())].into() })).await;
     for c in [&mut a, &mut b] {
-        assert_eq!(c.recv_event().await, Some(ServerMsg::Result { winner: 0, reason: EndReason::WrongState, tick: 2 * hz }));
+        assert_eq!(c.recv_event().await, Some(ServerMsg::Result { winner: 0, draw: false, reason: EndReason::WrongState, tick: 2 * hz }));
     }
 
     a.send(ClientMsg::Rematch).await;
@@ -294,4 +294,96 @@ async fn a_whole_match_ends_on_the_refereed_result_and_saves_a_replay() {
     saved.verify().unwrap();
     std::fs::remove_file(files[0].path()).unwrap();
     std::fs::remove_dir(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn a_room_plays_on_its_hosts_rules() {
+    let url = start_server(Config::default()).await;
+    let mut rules = fbg_sim::Rules::standard();
+    rules.colors = 6;
+    rules.swap = 30;
+    let bytes = rules.encode();
+    let (mut a, mut b) = (Client::hello(&url).await, Client::hello(&url).await);
+    a.send(ClientMsg::Room { code: "SIX".into(), rules: bytes.clone() }).await;
+    assert_eq!(a.recv().await, Some(ServerMsg::Waiting { room: "SIX".into() }));
+    // Whoever joins brings no rules of their own.
+    b.send(ClientMsg::Room { code: "SIX".into(), rules: vec![] }).await;
+    for c in [&mut a, &mut b] {
+        let Some(ServerMsg::Start { rules: got, seats, .. }) = c.recv().await else { panic!("no start") };
+        assert_eq!(got, bytes);
+        assert_eq!(seats.len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn the_standard_rules_go_as_none_and_damaged_rules_are_turned_away() {
+    let url = start_server(Config::default()).await;
+    let (mut a, mut b) = (Client::hello(&url).await, Client::hello(&url).await);
+    a.send(ClientMsg::Room { code: "STD".into(), rules: fbg_sim::Rules::standard().encode() }).await;
+    assert!(matches!(a.recv().await, Some(ServerMsg::Waiting { .. })));
+    b.send(ClientMsg::Room { code: "STD".into(), rules: vec![] }).await;
+    assert!(matches!(b.recv().await, Some(ServerMsg::Start { rules, .. }) if rules.is_empty()));
+
+    let mut c = Client::hello(&url).await;
+    let mut bad = fbg_sim::Rules::standard().encode();
+    bad[5] = 99; // 99 colours
+    c.send(ClientMsg::Room { code: "BAD".into(), rules: bad }).await;
+    assert!(matches!(c.recv().await, Some(ServerMsg::Notice(t)) if t.contains("can't be played")));
+    // Still in the lobby, and free to try again.
+    c.send(ClientMsg::Queue { mode: 0 }).await;
+    assert!(matches!(c.recv().await, Some(ServerMsg::Waiting { .. })));
+}
+
+#[tokio::test]
+async fn a_game_without_custom_rules_is_told_why_it_cant_join_one() {
+    let url = start_server(Config::default()).await;
+    let mut rules = fbg_sim::Rules::standard();
+    rules.colors = 4;
+    let mut host = Client::hello(&url).await;
+    host.send(ClientMsg::Room { code: "FOUR".into(), rules: rules.encode() }).await;
+    assert!(matches!(host.recv().await, Some(ServerMsg::Waiting { .. })));
+    let mut old = Client::connect(&url).await;
+    old.send(ClientMsg::Hello { protocol: PROTOCOL, engine: RULES_VERSION as u32, tick_hz: TICK_HZ as u32, name: "Old".into(), platform: "test".into(), features: 0 }).await;
+    assert!(matches!(old.recv().await, Some(ServerMsg::Welcome { .. })));
+    old.send(ClientMsg::Room { code: "FOUR".into(), rules: vec![] }).await;
+    assert!(matches!(old.recv().await, Some(ServerMsg::Notice(t)) if t.contains("custom rules")));
+}
+
+#[tokio::test]
+async fn messages_from_a_newer_game_are_skipped_not_punished() {
+    let url = start_server(Config::default()).await;
+    let mut c = Client::hello(&url).await;
+    c.raw(vec![14, 0x08, 1]).await; // message 14, which this server has never heard of
+    let mut ping = ClientMsg::Ping(5).encode();
+    ping.extend_from_slice(&[0xa0, 0x06, 1]); // and a field 100 it doesn't know
+    c.raw(ping).await;
+    assert_eq!(c.recv().await, Some(ServerMsg::Pong(5)));
+}
+
+#[test]
+fn any_valid_ruleset_fits_in_a_frame() {
+    assert!(fbg_sim::rules::MAX_BYTES <= fbg_server::protocol::MAX_RULES);
+}
+
+/// Whoever still has the protocol 2 page open is told to reload, in protocol 2's own words.
+#[tokio::test]
+async fn a_protocol_2_game_is_told_to_update_in_words_it_can_read() {
+    let url = start_server(Config::default()).await;
+    let mut c = Client::connect(&url).await;
+    let mut v2_hello = vec![1u8];
+    for v in [2u16, 1, 720] {
+        v2_hello.extend_from_slice(&v.to_le_bytes());
+    }
+    v2_hello.extend_from_slice(&[3, b'A', b'n', b'n', 3, b'w', b'e', b'b']);
+    c.raw(v2_hello).await;
+    let frame = loop {
+        match timeout(WAIT, c.0.next()).await.unwrap() {
+            Some(Ok(Message::Binary(b))) => break b,
+            Some(Ok(_)) => continue,
+            other => panic!("closed without a word: {other:?}"),
+        }
+    };
+    assert_eq!(frame[0], 65);
+    assert_eq!(frame[1] as usize, frame.len() - 2);
+    assert!(std::str::from_utf8(&frame[2..]).unwrap().contains("Reload"));
 }

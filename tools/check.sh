@@ -84,6 +84,7 @@ if command -v cargo > /dev/null; then
 		[ -f .godot/extension_list.cfg ] || "$GODOT" --headless --path . --import > /dev/null 2>&1
 		rm -f "$log"
 		run test_server --url=ws://127.0.0.1:47199 --seconds=20
+		run test_server --url=ws://127.0.0.1:47199 --seconds=10 --custom
 		[ $full -eq 1 ] && run test_server --url=ws://127.0.0.1:47199 --seconds=60 --bad-link
 		kill "$server" 2> /dev/null
 		wait "$server" 2> /dev/null

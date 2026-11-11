@@ -4,6 +4,7 @@ extends SceneTree
 ##   godot --headless --path . -s tests/test_server.gd -- --url=ws://127.0.0.1:47110 [--seconds=20] [--bad-link]
 ## --bad-link delays what each side receives by 30-90 ms, in order, and adds a stall of 200 ms
 ## twice a second, about what lost packets do to a TCP connection on a poor route.
+## --custom plays a room on custom rules from its host: six colours and quicker everything.
 
 const TPF := SimConst.TICKS_PER_FRAME
 
@@ -16,6 +17,7 @@ var _desyncs := 0
 var _results: Array = []
 var _acc := 0 # tick-units * 1e6, as in scenes/match.gd
 var _bad_link := false
+var _custom: SimRules = null
 var _inbox: Array = [[], []] # [arrival msec, packet], in order
 var _blocked_until := [0, 0]
 var _rng := RandomNumberGenerator.new()
@@ -34,6 +36,12 @@ func _init() -> void:
 			_seconds = a.trim_prefix("--seconds=").to_int()
 		elif a == "--bad-link":
 			_bad_link = true
+		elif a == "--custom":
+			_custom = SimRules.standard()
+			_custom.colors = 6
+			_custom.swap = 30
+			_custom.flash = 300
+			_custom.rise = SimRules.Line.new(SimRules.LINEAR, true, [[0, 2], [7200, 4]])
 	_test_codec()
 	var code := "T%d" % (randi() % 1000000)
 	for c in 2:
@@ -65,12 +73,16 @@ func _finish() -> void:
 
 
 func _on_welcomed(c: int, code: String) -> void:
-	_links[c].room(code)
+	# Only the host brings rules; whoever joins plays on them.
+	_links[c].room(code, _custom if c == 0 else null)
 
 
 ## Everything here is indexed by link. Which seat a link gets is up to the server.
 func _on_started(_id: int, game_seed: int, seat: int, c: int) -> void:
-	var s := RollbackSession.new(game_seed, seat, 2 * TPF, false, false, "auto" if seat == 0 else "gdscript")
+	var got := _links[c].rules
+	if (got == null) != (_custom == null) or (got and got.encode() != _custom.encode()):
+		_fail("link %d started on the wrong rules" % c)
+	var s := RollbackSession.new(game_seed, seat, 2 * TPF, false, false, "auto" if seat == 0 else "gdscript", got)
 	_sessions[c] = s
 	_cpus[c] = CpuPlayer.opponent("Overmind", "hard", game_seed + seat)
 	s.desynced.connect(func(_t: int) -> void: _desyncs += 1)
@@ -132,72 +144,70 @@ func _check() -> void:
 	for r: Array in _results:
 		if r[1] != ServerLink.PLAYED:
 			_fail("the server ended the match: winner %d, reason %d, tick %d" % r)
-	for s: RollbackSession in [a, b]:
+	# Replay files can't hold a ruleset yet, so only a standard match's replays can verify.
+	for s: RollbackSession in ([a, b] if _custom == null else []):
 		var saved := Replay.from_session(s)
 		if saved == null or Replay.decode(saved.encode()).verify() != "":
 			_fail("a saved replay doesn't verify")
 	print("  ok   %d s on the server: ticks %d and %d, rollbacks %d and %d, no desync" % [_seconds, a.state.tick, b.state.tick, a.stats.rollbacks, b.stats.rollbacks])
 
 
-## Byte layouts from docs/server-protocol.md, written out by hand: the Rust tests hold the
-## other side of the same bytes.
+## The protocol's bytes are fbg-proto's, tested in Rust. This holds the bridge to them:
+## what GDScript hands FbgWire comes back the same, and the link turns messages into signals.
 func _test_codec() -> void:
+	if not ServerLink.available():
+		_fail("FbgWire isn't in this build: run tools/build_rust_ext.sh linux")
+		return
+	var wire: Object = ClassDB.instantiate(ServerLink.WIRE)
+	if wire.ping(300) != PackedByteArray([6, 0x08, 0xac, 0x02]):
+		_fail("a ping isn't the bytes the Rust tests know: %s" % [wire.ping(300)])
 	var link := ServerLink.new()
 	var got: Array = []
 	link.input.connect(func(p: Dictionary) -> void: got.append(p))
 	link.started.connect(func(i: int, g: int, s: int) -> void: got.append([i, g, s]))
 	link.finished.connect(func(w: int, r: int, t: int) -> void: got.append([w, r, t]))
-	var w := StreamPeerBuffer.new()
-	w.put_u8(ServerLink.RELAY)
-	for v: int in [9, -1, 4, 1 << 40]:
-		w.put_64(v)
-	w.put_u16(1)
-	w.put_64(5)
-	w.put_32(16)
-	w.put_u8(1)
-	w.put_64(720)
-	w.put_64(-7)
-	link.decode(w.data_array)
-	if got.size() != 1 or got[0].f != 9 or got[0].a != -1 or got[0].s != 4 or got[0].v != 1 << 40 \
-			or got[0].t != PackedInt64Array([5]) or got[0].m != PackedInt32Array([16]) or got[0].c != {720: -7}:
-		_fail("a relayed input decoded wrong: %s" % [got])
-	got.clear()
-	for cut in w.data_array.size():
-		link.decode(w.data_array.slice(0, cut))
-	if not got.is_empty():
-		_fail("a cut-off input was accepted")
-	var extra := w.data_array.duplicate()
-	extra.append(0)
-	link.decode(extra)
-	if not got.is_empty():
-		_fail("an input with trailing bytes was accepted")
-	var huge := w.data_array.duplicate()
-	huge[33] = 0xFF
-	huge[34] = 0xFF
-	link.decode(huge)
-	if not got.is_empty():
-		_fail("an input claiming too many changes was accepted")
 
-	# Start carries the opponent's name, and a notice is text: both a length byte then UTF-8.
-	var start := StreamPeerBuffer.new()
-	start.put_u8(ServerLink.START)
-	start.put_64(7)
-	start.put_64(-3)
-	start.put_u8(1)
-	var name := "Zoë".to_utf8_buffer()
-	start.put_u8(name.size())
-	start.put_data(name)
-	link.decode(start.data_array)
-	if got != [[7, -3, 1]] or link.opponent_name != "Zoë":
-		_fail("a start decoded wrong: %s, %s" % [got, link.opponent_name])
+	var pkt := {"f": 9, "a": -1, "s": 4, "v": 1 << 40, "t": PackedInt64Array([5, 9]), "m": PackedInt32Array([16, -1]), "c": {720: -7, 360: 1 << 62}}
+	var relayed := pkt.duplicate()
+	relayed.type = "input"
+	relayed.seat = 1
+	link.decode(wire.server_bytes(relayed))
+	relayed.erase("type")
+	if got.size() != 1 or got[0] != relayed:
+		_fail("a relayed input decoded wrong: %s" % [got])
+	# What the game sends is the same message as what the server relays, bar its number.
+	var sent: PackedByteArray = wire.input(pkt)
+	var back: PackedByteArray = wire.server_bytes(relayed.merged({"type": "input", "seat": 0}, true))
+	if sent.slice(1) != back.slice(1):
+		_fail("sent and relayed inputs differ: %s vs %s" % [sent, back])
+	# A WebSocket delivers whole frames, so a cut one can't arrive; if it did, it would read
+	# as fewer fields or as damage. Either way, nothing breaks.
+	var bytes: PackedByteArray = wire.server_bytes(relayed.merged({"type": "input"}))
+	for cut in range(1, bytes.size()):
+		link.decode(bytes.slice(0, cut))
 	got.clear()
-	link.decode(start.data_array.slice(0, start.data_array.size() - 1))
+	link.decode(PackedByteArray([60, 0x08, 1])) # from a newer server: ignored
+	link.decode(PackedByteArray([20, 0x08])) # damaged: ignored
 	if not got.is_empty():
-		_fail("a cut-off start was accepted")
+		_fail("an unknown or damaged message got through: %s" % [got])
+
+	# A start carries the seats and, for a custom room, the rules.
+	var rules := SimRules.standard()
+	rules.colors = 6
+	var seats := [{"name": "Ann", "team": 0, "platform": "linux"}, {"name": "Zoë", "team": 1, "platform": "web"}]
+	link.decode(wire.server_bytes({"type": "start", "match_id": 7, "seed": -3, "seat": 0, "rules": rules.encode(), "seats": seats}))
+	if got != [[7, -3, 0]] or link.opponent_name != "Zoë" or link.rules == null or link.rules.colors != 6 or link.seats != seats:
+		_fail("a start decoded wrong: %s, %s, %s" % [got, link.opponent_name, link.seats])
+	got.clear()
+	link.decode(wire.server_bytes({"type": "start", "match_id": 8, "seed": 1, "seat": 1, "seats": seats}))
+	if got != [[8, 1, 1]] or link.rules != null or link.opponent_name != "Ann":
+		_fail("a standard start decoded wrong: %s" % [got])
+	got.clear()
+	link.decode(wire.server_bytes({"type": "result", "winner": 0, "draw": true, "reason": ServerLink.ENDED, "tick": 99}))
+	if got != [[-1, ServerLink.ENDED, 99]]:
+		_fail("a drawn result decoded wrong: %s" % [got])
 	var notices: Array = []
 	link.notice.connect(func(t: String) -> void: notices.append(t))
-	var note := PackedByteArray([ServerLink.NOTICE, 2]) + "hi".to_utf8_buffer()
-	link.decode(note)
-	link.decode(note.slice(0, 3))
+	link.decode(wire.server_bytes({"type": "notice", "text": "hi"}))
 	if notices != ["hi"]:
 		_fail("notices decoded wrong: %s" % [notices])

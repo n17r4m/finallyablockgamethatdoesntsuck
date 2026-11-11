@@ -3,12 +3,13 @@ name = "fbg-godot"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-only"
-description = "Lets Godot run fbg-sim, the Rust copy of the block game's rules"
+description = "Lets Godot run fbg-sim, the Rust copy of the block game's rules, and speak fbg-proto"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
+fbg-proto = { path = "../proto" }
 fbg-sim = { path = "../sim" }
 
 # Only the minimal bindings, since this class needs little of Godot and web builds pay for

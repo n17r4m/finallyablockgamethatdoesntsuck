@@ -55,7 +55,7 @@ func _ready() -> void:
 	# Input delay only hides network lag from rollback, so offline play has none.
 	var delay: int = 0 if _offline else Config.get_value("net", "input_delay_frames") * SimConst.TICKS_PER_FRAME
 	var solo := _offline and Net.cpu_name == ""
-	session = RollbackSession.new(Net.match_seed, Net.local_idx, delay, _offline, solo, Config.get_value("sim", "backend"))
+	session = RollbackSession.new(Net.match_seed, Net.local_idx, delay, _offline, solo, Config.get_value("sim", "backend"), Net.match_rules)
 	if _offline and not solo:
 		_cpu = CpuPlayer.opponent(Net.cpu_name, Net.cpu_level, Net.match_seed)
 		if Net.demo:

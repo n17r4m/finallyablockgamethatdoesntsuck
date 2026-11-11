@@ -25,8 +25,8 @@ struct Client(WebSocketStream<MaybeTlsStream<TcpStream>>);
 impl Client {
     async fn hello(url: &str, name: &str) -> Client {
         let mut c = Client(connect_async(url).await.unwrap().0);
-        c.send(ClientMsg::Hello { protocol: PROTOCOL, rules: RULES_VERSION, tick_hz: TICK_HZ, name: name.into(), platform: "test".into() }).await;
-        assert_eq!(c.recv().await, Some(ServerMsg::Welcome));
+        c.send(ClientMsg::Hello { protocol: PROTOCOL, engine: RULES_VERSION as u32, tick_hz: TICK_HZ as u32, name: name.into(), platform: "test".into(), features: 1 }).await;
+        assert!(matches!(c.recv().await, Some(ServerMsg::Welcome { .. })));
         c
     }
 
@@ -37,7 +37,7 @@ impl Client {
     async fn recv(&mut self) -> Option<ServerMsg> {
         loop {
             match timeout(WAIT, self.0.next()).await.expect("the server went quiet") {
-                Some(Ok(Message::Binary(b))) => return Some(ServerMsg::decode(&b).expect("the server sent junk")),
+                Some(Ok(Message::Binary(b))) => return Some(ServerMsg::read(&b).expect("the server sent junk")),
                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return None,
                 Some(Ok(_)) => {}
             }
@@ -85,13 +85,13 @@ impl Server {
     /// Two named players in a match by way of a room.
     async fn pair(&self, a: &str, b: &str) -> (Client, Client, u64) {
         let (mut ca, mut cb) = (Client::hello(&self.url, a).await, Client::hello(&self.url, b).await);
-        ca.send(ClientMsg::Room("ADMIN".into())).await;
-        assert_eq!(ca.recv().await, Some(ServerMsg::Waiting));
-        cb.send(ClientMsg::Room("ADMIN".into())).await;
-        let Some(ServerMsg::Start { match_id, opponent, seat: 0, .. }) = ca.recv().await else { panic!("no start") };
-        assert_eq!(opponent, b);
-        let Some(ServerMsg::Start { opponent, seat: 1, .. }) = cb.recv().await else { panic!("no start") };
-        assert_eq!(opponent, a);
+        ca.send(ClientMsg::Room { code: "ADMIN".into(), rules: vec![] }).await;
+        assert!(matches!(ca.recv().await, Some(ServerMsg::Waiting { .. })));
+        cb.send(ClientMsg::Room { code: "ADMIN".into(), rules: vec![] }).await;
+        let Some(ServerMsg::Start { match_id, seats, seat: 0, .. }) = ca.recv().await else { panic!("no start") };
+        assert_eq!((seats[0].name.as_str(), seats[1].name.as_str()), (a, b));
+        let Some(ServerMsg::Start { seats, seat: 1, .. }) = cb.recv().await else { panic!("no start") };
+        assert_eq!(seats[1].name.as_str(), b);
         (ca, cb, match_id)
     }
 }
@@ -107,8 +107,8 @@ async fn the_console_sees_names_places_and_matches() {
     let s = start(None).await;
     let (_a, _b, mid) = s.pair("Ann", "Bob").await;
     let mut waiting = Client::hello(&s.url, "Cy").await;
-    waiting.send(ClientMsg::Queue).await;
-    assert_eq!(waiting.recv().await, Some(ServerMsg::Waiting));
+    waiting.send(ClientMsg::Queue { mode: 0 }).await;
+    assert!(matches!(waiting.recv().await, Some(ServerMsg::Waiting { .. })));
 
     let snap = s.snapshot().await;
     assert_eq!(snap.protocol, PROTOCOL);
@@ -140,7 +140,7 @@ async fn a_kick_forfeits_the_match_and_closes_the_connection() {
     assert_eq!(b.recv_event().await, Some(ServerMsg::Notice("You were removed from the server.".into())));
     assert_eq!(b.recv_event().await, None);
     assert!(matches!(a.recv_event().await, Some(ServerMsg::Result { winner: 0, reason: EndReason::Left, .. })));
-    assert_eq!(a.recv_event().await, Some(ServerMsg::OpponentLeft));
+    assert!(matches!(a.recv_event().await, Some(ServerMsg::Left { .. })));
     assert!(s.act(Action::Kick(bob)).await.is_err());
 }
 
@@ -150,7 +150,7 @@ async fn ending_a_match_is_a_draw_for_both() {
     let (mut a, mut b, mid) = s.pair("Ann", "Bob").await;
     assert!(s.act(Action::End(mid)).await.is_ok());
     for c in [&mut a, &mut b] {
-        assert!(matches!(c.recv_event().await, Some(ServerMsg::Result { winner: 2, reason: EndReason::Ended, .. })));
+        assert!(matches!(c.recv_event().await, Some(ServerMsg::Result { draw: true, reason: EndReason::Ended, .. })));
     }
     assert!(s.act(Action::End(mid)).await.is_err());
     assert!(s.act(Action::End(mid + 100)).await.is_err());
@@ -161,15 +161,15 @@ async fn a_drain_refuses_new_games_and_exits_once_the_last_one_ends() {
     let s = start(None).await;
     let (mut a, mut b, mid) = s.pair("Ann", "Bob").await;
     let mut waiting = Client::hello(&s.url, "Cy").await;
-    waiting.send(ClientMsg::Queue).await;
-    assert_eq!(waiting.recv().await, Some(ServerMsg::Waiting));
+    waiting.send(ClientMsg::Queue { mode: 0 }).await;
+    assert!(matches!(waiting.recv().await, Some(ServerMsg::Waiting { .. })));
 
     assert!(s.act(Action::Drain { on: true, exit: true }).await.is_ok());
     // Whoever was waiting is told, and so is whoever turns up.
-    assert!(matches!(waiting.recv().await, Some(ServerMsg::Refused(why)) if why.contains("restarting")));
+    assert!(matches!(waiting.recv().await, Some(ServerMsg::Refused { text: why, .. }) if why.contains("restarting")));
     let mut late = Client::hello(&s.url, "Di").await;
-    late.send(ClientMsg::Queue).await;
-    assert!(matches!(late.recv().await, Some(ServerMsg::Refused(why)) if why.contains("restarting")));
+    late.send(ClientMsg::Queue { mode: 0 }).await;
+    assert!(matches!(late.recv().await, Some(ServerMsg::Refused { text: why, .. }) if why.contains("restarting")));
     for c in [&mut a, &mut b] {
         assert!(matches!(c.recv_event().await, Some(ServerMsg::Notice(_))));
     }
@@ -188,8 +188,8 @@ async fn a_drain_can_be_called_off() {
     assert!(s.snapshot().await.draining);
     s.act(Action::Drain { on: false, exit: false }).await.unwrap();
     let mut c = Client::hello(&s.url, "Ann").await;
-    c.send(ClientMsg::Queue).await;
-    assert_eq!(c.recv().await, Some(ServerMsg::Waiting));
+    c.send(ClientMsg::Queue { mode: 0 }).await;
+    assert!(matches!(c.recv().await, Some(ServerMsg::Waiting { .. })));
 }
 
 #[tokio::test]
@@ -205,7 +205,7 @@ async fn a_ban_closes_and_refuses_that_address_and_survives_a_restart() {
 
     let s = start(Some(&db)).await;
     let mut again = Client(connect_async(&s.url).await.unwrap().0);
-    assert!(matches!(again.recv().await, Some(ServerMsg::Refused(why)) if why.contains("can't play")));
+    assert!(matches!(again.recv().await, Some(ServerMsg::Refused { text: why, .. }) if why.contains("can't play")));
     assert!(s.act(Action::Unban("127.0.0.1".into())).await.is_ok());
     Client::hello(&s.url, "Ann").await;
     let _ = std::fs::remove_file(&db);
