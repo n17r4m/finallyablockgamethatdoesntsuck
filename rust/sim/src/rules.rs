@@ -9,6 +9,7 @@
 use crate::consts::*;
 use crate::hash64;
 use crate::replay::MAX_TICKS;
+use std::sync::{Arc, OnceLock};
 
 pub const LAYOUT: u8 = 1;
 const MAGIC: &[u8; 4] = b"FBRU";
@@ -356,6 +357,14 @@ impl Rules {
     /// Names a ruleset in one number: the hash of its bytes.
     pub fn fingerprint(&self) -> i64 {
         hash64(&self.encode())
+    }
+}
+
+impl Rules {
+    /// One standard ruleset for every match that doesn't ask for another.
+    pub fn shared_standard() -> Arc<Rules> {
+        static STANDARD: OnceLock<Arc<Rules>> = OnceLock::new();
+        STANDARD.get_or_init(|| Arc::new(Rules::standard())).clone()
     }
 }
 

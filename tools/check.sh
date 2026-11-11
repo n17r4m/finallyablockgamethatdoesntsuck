@@ -100,6 +100,7 @@ if command -v cargo > /dev/null; then
 		rm -f "$log"
 		run test_rust_bridge
 		run test_backends
+		run test_rules_play
 		# The network failures again, with Rust on both sides and a Rust player against GDScript.
 		if [ $full -eq 1 ]; then
 			run test_net_matrix --seeds=4 --backends=rust

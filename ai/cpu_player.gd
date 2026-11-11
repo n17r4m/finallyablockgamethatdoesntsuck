@@ -368,7 +368,7 @@ func features(m: PackedByteArray, incoming := 0) -> PackedFloat32Array:
 	for y in H:
 		for x in W:
 			var c := m[y * W + x]
-			if c == 0 or c > SimConst.COLORS:
+			if c == 0 or c >= SimConst.GARBAGE:
 				continue
 			if x < W - 1 and m[y * W + x + 1] == c:
 				pairs += 1
@@ -417,7 +417,7 @@ func _valid_swaps(g: PackedByteArray) -> Array[Vector2i]:
 		for x in W - 1:
 			var a := g[y * W + x]
 			var c := g[y * W + x + 1]
-			if a != c and a <= SimConst.COLORS and c <= SimConst.COLORS:
+			if a != c and a < SimConst.GARBAGE and c < SimConst.GARBAGE:
 				out.append(Vector2i(x, y))
 	return out
 
@@ -426,7 +426,7 @@ func _swap(m: PackedByteArray, x: int, y: int) -> bool:
 	var i := y * W + x
 	var a := m[i]
 	var c := m[i + 1]
-	if a == c or a > SimConst.COLORS or c > SimConst.COLORS:
+	if a == c or a >= SimConst.GARBAGE or c >= SimConst.GARBAGE:
 		return false
 	m[i] = c
 	m[i + 1] = a
@@ -442,7 +442,7 @@ func _gravity(m: PackedByteArray) -> void:
 			var c := m[y * W + x]
 			if c == 0:
 				continue
-			if c > SimConst.COLORS:
+			if c >= SimConst.GARBAGE:
 				write = y - 1
 			else:
 				if write != y:
@@ -465,7 +465,7 @@ func _resolve(m: PackedByteArray) -> Vector4i:
 		for y in H:
 			for x in W:
 				var c := m[y * W + x]
-				if c == 0 or c > SimConst.COLORS:
+				if c == 0 or c >= SimConst.GARBAGE:
 					continue
 				if x <= W - 3 and m[y * W + x + 1] == c and m[y * W + x + 2] == c:
 					mark[y * W + x] = 1

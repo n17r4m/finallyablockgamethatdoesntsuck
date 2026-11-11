@@ -22,7 +22,7 @@ const FLASH_PERIOD := 36 # ticks per flash on/off
 ## flash: bool, popped: float (0 = intact, >0 = burst progress 0..1), chain: bool
 static func blocks(b: SimBoard) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
-	var lift := float(b.rise) / SimConst.ROW_UNITS
+	var lift := float(b.rise) / b.rules.row_units
 	for i in SimBoard.N:
 		var c := b.color[i]
 		if c == 0:
@@ -34,15 +34,15 @@ static func blocks(b: SimBoard) -> Array[Dictionary]:
 		var s := b.st[i]
 		var t := b.tm[i]
 		if s == SimBoard.SWAP_L or s == SimBoard.SWAP_R:
-			var p := 1.0 - float(t) / SimConst.SWAP_TICKS
+			var p := 1.0 - float(t) / b.rules.swap
 			var dir := 1.0 if s == SimBoard.SWAP_R else -1.0
 			pos.x -= dir * (1.0 - p)
 			# The panel moving right arcs in front, the one moving left behind.
 			pos.z = dir * sin(PI * p) * SWAP_DEPTH
 		elif s == SimBoard.FALL:
-			pos.y += 1.0 - float(t) / SimConst.FALL_TICKS
+			pos.y += 1.0 - float(t) / b.rules.fall
 		elif s == SimBoard.LAND:
-			var k := float(t) / SimConst.LAND_TICKS
+			var k := float(t) / b.rules.land
 			scale = Vector3(1.0 + 0.12 * k, 1.0 - 0.12 * k, 1.0)
 		elif s == SimBoard.MATCHED and b.gid[i] != 0:
 			# Cracking garbage: flash, then reveal the panel each bottom-row cell becomes,
@@ -59,7 +59,7 @@ static func blocks(b: SimBoard) -> Array[Dictionary]:
 			var flash_end := b.aux[i] >> 16
 			flash = t > flash_end and (t / FLASH_PERIOD) % 2 == 0
 			if t <= pop_at:
-				popped = (pop_at - t) / (SimConst.POP_TICKS * POP_LIFE)
+				popped = (pop_at - t) / (b.rules.pop * POP_LIFE)
 				if popped >= 1.0:
 					continue
 				pos.z = popped * 0.8
@@ -71,7 +71,7 @@ static func blocks(b: SimBoard) -> Array[Dictionary]:
 
 
 static func lift(b: SimBoard) -> float:
-	return float(b.rise) / SimConst.ROW_UNITS
+	return float(b.rise) / b.rules.row_units
 
 
 ## Cursor's left cell in the same space as blocks (it covers x and x + 1).
@@ -106,7 +106,9 @@ static func danger_columns(b: SimBoard) -> PackedByteArray:
 
 ## 0 at normal speed .. 1 in full bullet time.
 static func slowmo(b: SimBoard) -> float:
-	return float(SimConst.TIME_UNIT - b.time_rate) / (SimConst.TIME_UNIT - SimConst.TIME_SLOW)
+	if b.rules.time_slow >= SimConst.TIME_UNIT:
+		return 0.0 # bullet time is off
+	return float(SimConst.TIME_UNIT - b.time_rate) / (SimConst.TIME_UNIT - b.rules.time_slow)
 
 
 ## Rows of resting garbage stacked above the visible well.
@@ -126,7 +128,7 @@ static func grace_seconds(b: SimBoard) -> float:
 
 ## 0..1 grace remaining while topped out, 1 otherwise.
 static func health(b: SimBoard) -> float:
-	return float(b.health) / SimConst.HEALTH_TICKS
+	return float(b.health) / maxi(b.rules.health, 1)
 
 
 ## "12 combo" / "x3 chain" callout text while it's live, else "".

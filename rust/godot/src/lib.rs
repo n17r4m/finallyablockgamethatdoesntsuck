@@ -3,7 +3,8 @@
 //!
 //! GDScript reaches this through ClassDB, not by name, because a build may not have it.
 
-use fbg_sim::{Replay, State};
+use fbg_sim::{Replay, Rules, State};
+use std::sync::Arc;
 use godot::prelude::*;
 
 struct FbgExtension;
@@ -29,6 +30,19 @@ impl RustSim {
     #[func]
     fn reset(&mut self, game_seed: i64, solo: bool) {
         self.state = State::new(game_seed, solo);
+    }
+
+    /// A match on the rules these bytes encode (SimRules.encode()). False, and nothing
+    /// changes, if Rust won't play them.
+    #[func]
+    fn reset_with_rules(&mut self, game_seed: i64, solo: bool, rules: PackedByteArray) -> bool {
+        match Rules::decode(rules.as_slice()) {
+            Some(r) => {
+                self.state = State::with_rules(game_seed, solo, Arc::new(r));
+                true
+            }
+            None => false,
+        }
     }
 
     /// Returns the winner, so GDScript needn't cross the bridge again to learn it.

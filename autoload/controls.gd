@@ -57,11 +57,8 @@ const CAPTURE_AXIS := 0.6 # how far a stick must move to count when binding it
 const TAP_HEIGHT := 48.0 # the usual minimum for a finger
 const POPUP_ROW_GAP := 21 # makes dropdown rows about 44 tall, so all six fit on a landscape phone
 const NO_CELL := Vector2i(-1, -1)
-const REPEAT_DELAY_MS := SimConst.REPEAT_DELAY * 1000 / SimConst.TICK_HZ
-const REPEAT_RATE_MS := SimConst.REPEAT_RATE * 1000 / SimConst.TICK_HZ
-## How far apart a carry's swaps go. The block has to have finished the last one, and with input
-## delay the board can't show that in time. The delay never changes, so spacing them is enough.
-const STEP_MS := SimConst.SWAP_TICKS * 1000 / SimConst.TICK_HZ + 17
+## Long ago, so whatever waits on it is ready.
+const LONG_AGO_MS := -1000000
 ## The board shows a swap only after any input delay, so a carried block isn't judged until then.
 const LET_GO_CHECK_MS := 150
 
@@ -104,6 +101,7 @@ var _swap_frame := false # last sample pressed swap; this one must release
 var _pairs: Array[Vector2i] = [] # tapped or flicked pairs waiting their turn, left cell and row
 var _stays_on_pair := false # the swap in progress is one: the cursor stays on it, not on one block
 var _last_rise := 0
+var _rules := SimRules.shared_standard() # the rules of the board last sampled
 var _presses := {} # action -> key/button presses no sample has delivered yet
 var _down := 0 # actions down, as of the last event or sample
 var _sent := 0 # the last sample
@@ -111,7 +109,7 @@ var _held := false # grab cursor: a block is in hand, at _grab
 var _keys_before := 0 # grab cursor: the keys of the last sample
 var _repeat_at := 0 # grab cursor: when a held direction next moves
 var _after_steps := Vector2i.ZERO # grab cursor: moves made while a let-go block finished moving
-var _step_at := -STEP_MS # when the last gesture's swap was sent
+var _step_at := LONG_AGO_MS # when the last gesture's swap was sent
 var _step_cell := NO_CELL # and its left cell and row
 var _view: SimBoard # the board of the last sample
 var _pointer := Vector2.ZERO # where a floating pointer is, on screen
@@ -539,6 +537,16 @@ static func _trimmed(path: PackedVector2Array, trim: float) -> PackedVector2Arra
 
 
 ## Where the carried block will be once the queued swaps are done.
+static func _ms(ticks: int) -> int:
+	return ticks * 1000 / SimConst.TICK_HZ
+
+
+## How far apart a carry's swaps go. The block has to have finished the last one, and with input
+## delay the board can't show that in time. The delay never changes, so spacing them is enough.
+func _step_ms() -> int:
+	return _ms(_rules.swap) + 17
+
+
 func _projected_x() -> int:
 	var at := _grab.x
 	for left in _steps:
@@ -548,6 +556,8 @@ func _projected_x() -> int:
 
 ## b: the local board, so gestures can follow the stack when it pushes up a row.
 func sample(b: SimBoard = null) -> int:
+	if b != null and b.rules != null:
+		_rules = b.rules
 	_view = b
 	if b:
 		_follow_rise(b)
@@ -581,7 +591,7 @@ func sample(b: SimBoard = null) -> int:
 func _follow_rise(b: SimBoard) -> void:
 	var change := b.rise - _last_rise
 	_last_rise = b.rise
-	var rows := -1 if change < -SimConst.ROW_UNITS / 4 else (1 if change > SimConst.ROW_UNITS * 3 / 4 else 0)
+	var rows := -1 if change < -b.rules.row_units / 4 else (1 if change > b.rules.row_units * 3 / 4 else 0)
 	if rows != 0 and _grab.y >= 0:
 		_grab.y = clampi(_grab.y + rows, 0, SimConst.H - 1)
 		if _row >= 0:
@@ -622,7 +632,7 @@ func _grab_mask(keys: int, b: SimBoard) -> int:
 		var left := _steps[0]
 		if b != null and _refuses(b, left, _grab.y):
 			_steps.clear()
-		elif now - _step_at >= STEP_MS and (b == null or _swappable(b, left, _grab.y)):
+		elif now - _step_at >= _step_ms() and (b == null or _swappable(b, left, _grab.y)):
 			_steps.remove_at(0)
 			_grab.x = left + 1 if _grab.x == left else left
 			_step_at = now
@@ -640,10 +650,10 @@ func _grab_mask(keys: int, b: SimBoard) -> int:
 func _move_by_keys(keys: int, pressed: int, now: int) -> void:
 	var moves := pressed & SimConst.DIRS
 	if moves != 0:
-		_repeat_at = now + REPEAT_DELAY_MS
+		_repeat_at = now + _ms(_rules.repeat_delay)
 	elif keys & SimConst.DIRS != 0 and now >= _repeat_at:
 		moves = keys & SimConst.DIRS
-		_repeat_at = now + REPEAT_RATE_MS
+		_repeat_at = now + _ms(_rules.repeat_rate)
 	var dx := (1 if moves & SimConst.RIGHT else 0) - (1 if moves & SimConst.LEFT else 0)
 	var dy := (1 if moves & SimConst.DOWN else 0) - (1 if moves & SimConst.UP else 0)
 	if _held:
@@ -718,7 +728,7 @@ func _touch_mask(b: SimBoard) -> int:
 ## and the sim ignores a swap of a block mid-swap. A swap elsewhere has nothing to wait for.
 func _too_soon(left: int, y: int) -> bool:
 	return (input_is_delayed and y == _step_cell.y and absi(left - _step_cell.x) <= 1
-			and clock.call() - _step_at < STEP_MS)
+			and clock.call() - _step_at < _step_ms())
 
 
 ## Both cells of a swap are ready (the previous swap's animation has finished).
@@ -747,7 +757,7 @@ func reset_touch() -> void:
 	_held = false
 	_keys_before = 0
 	_after_steps = Vector2i.ZERO
-	_step_at = -STEP_MS
+	_step_at = LONG_AGO_MS
 	_step_cell = NO_CELL
 	_last_rise = 0
 	_view = null

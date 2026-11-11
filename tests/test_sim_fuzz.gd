@@ -41,7 +41,7 @@ func _fail(what: String) -> void:
 func _check_state_list() -> void:
 	var b := SimBoard.new()
 	for p in b.get_script().get_script_property_list():
-		if p.usage & PROPERTY_USAGE_SCRIPT_VARIABLE and not SimBoard.STATE.has(p.name):
+		if p.usage & PROPERTY_USAGE_SCRIPT_VARIABLE and not SimBoard.STATE.has(p.name) and not SimBoard.NOT_STATE.has(p.name):
 			_fail("SimBoard.%s is missing from STATE" % p.name)
 
 

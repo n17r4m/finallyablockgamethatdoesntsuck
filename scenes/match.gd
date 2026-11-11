@@ -320,9 +320,9 @@ func _draw() -> void:
 
 	var big := ""
 	var small := ""
-	if s.tick < SimConst.COUNTDOWN_TICKS:
-		big = str(ceili(float(SimConst.COUNTDOWN_TICKS - s.tick) / SimConst.TICK_HZ))
-	elif s.tick < SimConst.COUNTDOWN_TICKS + SimConst.TICK_HZ / 2:
+	if s.tick < s.rules.countdown:
+		big = str(ceili(float(s.rules.countdown - s.tick) / SimConst.TICK_HZ))
+	elif s.tick < s.rules.countdown + SimConst.TICK_HZ / 2:
 		big = "GO!"
 	if s.winner != -1:
 		if _solo():
@@ -372,7 +372,7 @@ func _draw_hint(font: Font) -> void:
 
 
 func _hint_showing() -> bool:
-	return session.state.tick < SimConst.COUNTDOWN_TICKS and not _pilot
+	return session.state.tick < session.state.rules.countdown and not _pilot
 
 
 ## One thing per line: the hint goes in narrow spaces.

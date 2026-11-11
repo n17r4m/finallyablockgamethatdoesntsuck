@@ -147,8 +147,26 @@ game is re-simulating it.
 Every number a match plays by, apart from the shape of the well and the tick rate:
 `sim/sim_rules.gd` and `rust/sim/src/rules.rs`. `tests/golden/standard.rules` is the standard
 ruleset, and both copies must write exactly those bytes. A ruleset's **fingerprint** is the hash
-of its bytes, the same function as the state hash. Not used by the sim yet: today's constants
-still drive it, and the standard ruleset is those constants as data.
+of its bytes, the same function as the state hash.
+
+Every board plays by a ruleset (`SimState.create(seed, solo, rules)`, `State::with_rules`), the
+standard one unless given another; the match's ruleset sets the countdown. Rules aren't game
+state: they never change during a match, copies share them, and they aren't in the state hash,
+so whatever records a game must record its rules too. The standard values live in `SimConst`
+and `consts.rs`; changing one changes the standard game, so it's a rule change like any other.
+`tests/test_rules_play.gd` plays random valid rulesets on both implementations and holds them
+to the same state on every check.
+
+Where the standard game never got there, the ruleset adds behaviour of its own:
+
+- **Making a row with fewer than 3 colours.** A cell avoids making a triple against the row or
+  the two rows above it. If every colour would, it takes the next random colour as it comes.
+  With 3 or more colours some colour always fits, so this never happens.
+- **Combos and chains.** A clear of at least `combo_from` panels sends `combo`'s slabs, if combos
+  send. The rise pause and callout still come from clears of 4 or more and from chains. A chain
+  sends `chain_rows` rows when it ends, if chains send, and nothing when that's 0.
+- **Manual raise off.** The raise input is ignored for raising; it's still input, so it's still
+  the last input in the state.
 
 | Field | Encoding |
 |---|---|

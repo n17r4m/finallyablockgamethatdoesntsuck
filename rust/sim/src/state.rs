@@ -1,7 +1,8 @@
 //! The entire deterministic game: both wells, the tick counter and the result.
 
 use crate::board::Board;
-use crate::consts::COUNTDOWN_TICKS;
+use crate::rules::Rules;
+use std::sync::Arc;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct State {
@@ -9,17 +10,26 @@ pub struct State {
     pub solo: bool,
     pub winner: i64, // -1 playing, 0/1 that board won, 2 draw
     pub boards: [Board; 2],
+    /// The match's rules: the countdown, and what each board starts with. Not hashed.
+    pub rules: Arc<Rules>,
 }
 
 impl State {
+    /// A match on the standard rules.
     pub fn new(seed: i64, solo: bool) -> State {
+        State::with_rules(seed, solo, Rules::shared_standard())
+    }
+
+    /// A match on these rules, which must be valid (`Rules::decode` and `validate` see to it).
+    pub fn with_rules(seed: i64, solo: bool, rules: Arc<Rules>) -> State {
         // Same seed for both wells so the start is fair.
-        State { tick: 0, solo, winner: -1, boards: [Board::new(seed), Board::new(seed)] }
+        let boards = [Board::new(seed, rules.clone()), Board::new(seed, rules.clone())];
+        State { tick: 0, solo, winner: -1, boards, rules }
     }
 
     pub fn step(&mut self, input0: u32, input1: u32) {
         if self.winner == -1 {
-            let live = self.tick >= COUNTDOWN_TICKS;
+            let live = self.tick >= self.rules.countdown as i64;
             self.boards[0].step(input0, live);
             if !self.solo {
                 self.boards[1].step(input1, live);

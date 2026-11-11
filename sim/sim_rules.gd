@@ -137,6 +137,16 @@ static func standard() -> SimRules:
 	return SimRules.new()
 
 
+static var _shared: SimRules
+
+
+## One standard ruleset for every match that doesn't ask for another. Don't change it.
+static func shared_standard() -> SimRules:
+	if _shared == null:
+		_shared = SimRules.new()
+	return _shared
+
+
 ## "" if the sim can play these rules: every game ends, and nothing overflows. Else what's wrong.
 func validate() -> String:
 	if colors < 1 or colors > MAX_COLORS:

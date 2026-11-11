@@ -6,20 +6,24 @@ var tick := 0
 var boards: Array[SimBoard] = []
 var solo := false # practice: only board 0 plays
 var winner := -1 # -1 playing, 0/1 that board won, 2 draw
+## The match's rules: the countdown, and what each board starts with. Not hashed.
+var rules: SimRules
 
 
-static func create(game_seed: int, solo_mode := false) -> SimState:
+## A match. match_rules must be valid; null plays the standard rules.
+static func create(game_seed: int, solo_mode := false, match_rules: SimRules = null) -> SimState:
 	var s := SimState.new()
 	s.solo = solo_mode
+	s.rules = match_rules if match_rules else SimRules.shared_standard()
 	# Same seed for both wells so the start is fair.
-	s.boards.append(SimBoard.create(game_seed))
-	s.boards.append(SimBoard.create(game_seed))
+	s.boards.append(SimBoard.create(game_seed, s.rules))
+	s.boards.append(SimBoard.create(game_seed, s.rules))
 	return s
 
 
 func step(input0: int, input1: int) -> void:
 	if winner == -1:
-		var live := tick >= SimConst.COUNTDOWN_TICKS
+		var live := tick >= rules.countdown
 		boards[0].step(input0, live)
 		if not solo:
 			boards[1].step(input1, live)
@@ -43,6 +47,7 @@ func copy() -> SimState:
 	s.tick = tick
 	s.solo = solo
 	s.winner = winner
+	s.rules = rules
 	s.boards.append(boards[0].copy())
 	s.boards.append(boards[1].copy())
 	return s

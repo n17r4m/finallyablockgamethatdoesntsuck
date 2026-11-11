@@ -39,6 +39,8 @@ case "${1:-}" in
 build)
 	[ "$(id -u)" -ne 0 ] || { echo "build as yourself, not root" >&2; exit 1; }
 	cargo build --release --manifest-path rust/Cargo.toml -p fbg-server
+	# The web game runs the Rust rules through this; a stale one would play old rules.
+	tools/build_rust_ext.sh web > /dev/null
 	rm -rf "$OUT"
 	mkdir -p "$OUT/web"
 	cp rust/target/release/fbg-server "$OUT/"

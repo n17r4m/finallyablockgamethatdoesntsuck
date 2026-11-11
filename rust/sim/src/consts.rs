@@ -23,6 +23,8 @@ pub const TARGET: u32 = 1 << 16;
 pub const TARGET_MASK: u32 = TARGET | (0x7 << 8) | (0xF << 12);
 pub const INPUT_BITS: u32 = DIRS | SWAP | RAISE | TARGET_MASK;
 
+// The timings, speeds, colours and garbage below are the standard ruleset's values. The sim reads
+// them through `Rules` (each board's rules), so a custom game can change them.
 pub const REPEAT_DELAY: i64 = 120;
 pub const REPEAT_RATE: i64 = 36;
 

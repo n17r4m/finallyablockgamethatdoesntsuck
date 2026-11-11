@@ -29,6 +29,8 @@ const TARGET := 1 << 16
 const TARGET_MASK := TARGET | (0x7 << 8) | (0xF << 12)
 const INPUT_BITS := DIRS | SWAP | RAISE | TARGET_MASK # anything else is not an input
 
+# The timings, speeds, colours and garbage below are the standard ruleset's values. The sim reads
+# them through SimRules (each board's rules), so a custom game can change them.
 const REPEAT_DELAY := 120 # ~167 ms before cursor auto-repeat
 const REPEAT_RATE := 36 # ~50 ms per repeat step
 

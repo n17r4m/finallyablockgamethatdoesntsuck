@@ -3,6 +3,8 @@
 //! same order, because the order things happen in is part of the rules.
 
 use crate::consts::*;
+use crate::rules::Rules;
+use std::sync::Arc;
 
 pub const NORMAL: u8 = 0;
 pub const SWAP_L: u8 = 1;
@@ -15,7 +17,7 @@ pub const MATCHED: u8 = 6;
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Board {
     // Per cell, row-major, y = 0 is the top of the hidden buffer.
-    pub color: [u8; N], // 0 empty, 1..COLORS panel, GARBAGE
+    pub color: [u8; N], // 0 empty, 1..colours panel, GARBAGE
     pub st: [u8; N],
     pub tm: [i32; N],   // ticks left in the current state
     pub aux: [i32; N],  // MATCHED: pop tick | flash-end tick << 16
@@ -61,6 +63,9 @@ pub struct Board {
     pub ramp_t: i64,
     pub cracking: bool,
     pub crack_hang: i64, // world ticks left of revealed panels hanging after a crack
+    /// What this board plays by. Not game state: it never changes during a match, so it isn't
+    /// hashed, and copies share it.
+    pub rules: Arc<Rules>,
 }
 
 /// A slab's rectangle.
@@ -118,8 +123,10 @@ fn neighbours(i: usize) -> ([usize; 4], usize) {
 }
 
 impl Board {
-    pub fn new(seed: i64) -> Board {
+    /// A fresh well, playing by `rules`, which must be valid.
+    pub fn new(seed: i64, rules: Arc<Rules>) -> Board {
         let mut b = Board {
+            health: rules.health as i64,
             color: [0; N],
             st: [0; N],
             tm: [0; N],
@@ -134,7 +141,6 @@ impl Board {
             hold: 0,
             rise: 0,
             stop_t: 0,
-            health: HEALTH_TICKS,
             rng: (seed as u64 & 0xFFFF_FFFF) as u32 | 1,
             score: 0,
             lost: false,
@@ -160,6 +166,7 @@ impl Board {
             ramp_t: 0,
             cracking: false,
             crack_hang: 0,
+            rules,
         };
         for y in ROWS - 5..ROWS {
             let row = b.make_row(y - 1);
@@ -272,13 +279,13 @@ impl Board {
 
     /// Ease the world clock toward bullet time while garbage cracks, and back after.
     fn ease_time(&mut self) {
-        let target = if self.cracking || self.crack_hang > 0 { TIME_SLOW } else { TIME_UNIT };
+        let target = if self.cracking || self.crack_hang > 0 { self.rules.time_slow as i64 } else { TIME_UNIT };
         if self.time_rate == target {
             self.ramp_t = 0;
             return;
         }
         self.ramp_t += 1;
-        if self.ramp_t >= TIME_RAMP {
+        if self.ramp_t >= (self.rules.time_ramp as i64) {
             self.ramp_t = 0;
             self.time_rate += if target > self.time_rate { 1 } else { -1 };
         }
@@ -289,7 +296,7 @@ impl Board {
             return;
         }
         if self.gar_q.is_empty() {
-            self.gar_t = GARBAGE_DELAY;
+            self.gar_t = self.rules.garbage_delay as i64;
         }
         self.gar_q.extend_from_slice(slabs);
     }
@@ -320,7 +327,7 @@ impl Board {
         let dir = input & DIRS;
         if dir != 0 && dir == self.prev_input & DIRS {
             self.hold += 1;
-            if self.hold >= REPEAT_DELAY && (self.hold - REPEAT_DELAY) % REPEAT_RATE == 0 {
+            if self.hold >= (self.rules.repeat_delay as i64) && (self.hold - (self.rules.repeat_delay as i64)) % (self.rules.repeat_rate as i64) == 0 {
                 self.move_cursor(dir);
             }
         } else {
@@ -377,10 +384,10 @@ impl Board {
             self.chain[k] = 0;
         }
         if self.color[j] != 0 {
-            self.set_state(j, SWAP_R, SWAP_TICKS); // arrived from the left
+            self.set_state(j, SWAP_R, self.rules.swap); // arrived from the left
         }
         if self.color[i] != 0 {
-            self.set_state(i, SWAP_L, SWAP_TICKS); // arrived from the right
+            self.set_state(i, SWAP_L, self.rules.swap); // arrived from the right
         }
     }
 
@@ -435,7 +442,7 @@ impl Board {
                         self.tm[i] -= 1;
                         if self.tm[i] == 0 {
                             self.st[i] = FALL;
-                            self.tm[i] = FALL_TICKS;
+                            self.tm[i] = self.rules.fall;
                         }
                     }
                     FALL => self.fall(i),
@@ -458,13 +465,13 @@ impl Board {
             self.tm[i] -= 1;
             if self.tm[i] <= 0 {
                 self.move_cell(i, b);
-                self.tm[b] = FALL_TICKS;
+                self.tm[b] = self.rules.fall;
             }
         } else if b < N && (self.st[b] == FALL || self.st[b] == HOVER) {
             self.tm[i] = (self.tm[i] - 1).max(1); // follow the block below as soon as it moves
         } else {
             self.st[i] = LAND;
-            self.tm[i] = LAND_TICKS;
+            self.tm[i] = self.rules.land;
             self.need_scan = true;
         }
     }
@@ -490,7 +497,7 @@ impl Board {
         match self.st[i] {
             HOVER => {
                 if self.slab_tick(r) == 0 {
-                    self.slab_set(r, FALL, FALL_TICKS);
+                    self.slab_set(r, FALL, self.rules.fall);
                 }
             }
             FALL => {
@@ -518,7 +525,7 @@ impl Board {
                             self.move_cell(y * W + x0 + k, (y + 1) * W + x0 + k);
                         }
                     }
-                    self.slab_set(Rect { y0: y0 + 1, ..r }, FALL, FALL_TICKS);
+                    self.slab_set(Rect { y0: y0 + 1, ..r }, FALL, self.rules.fall);
                 }
             }
             MATCHED => {
@@ -538,10 +545,10 @@ impl Board {
                                 || self.st[below] == HOVER
                                 || self.st[below] == FALL)
                         {
-                            self.set_state(c, HOVER, GARBAGE_HANG_TICKS); // hang before the drop
+                            self.set_state(c, HOVER, self.rules.garbage_hang); // hang before the drop
                         }
                     }
-                    self.crack_hang = (GARBAGE_HANG_TICKS + FALL_TICKS * 4) as i64;
+                    self.crack_hang = (self.rules.garbage_hang + self.rules.fall * 4) as i64;
                     if h > 1 {
                         self.slab_set(Rect { h: h - 1, ..r }, NORMAL, 0);
                     }
@@ -576,7 +583,7 @@ impl Board {
                     continue;
                 }
                 if self.color[b] == 0 {
-                    self.set_state(i, HOVER, HOVER_TICKS);
+                    self.set_state(i, HOVER, self.rules.hover);
                 } else if self.st[b] == HOVER || self.st[b] == FALL {
                     self.set_state(i, self.st[b], self.tm[b]); // join the column below
                 }
@@ -606,7 +613,7 @@ impl Board {
             }
         }
         match join {
-            None => self.slab_set(r, HOVER, HOVER_TICKS),
+            None => self.slab_set(r, HOVER, self.rules.hover),
             Some(c) => self.slab_set(r, self.st[c], self.tm[c]),
         }
     }
@@ -662,20 +669,23 @@ impl Board {
         let n = idx.len();
         if n > 0 {
             let count = n as i32;
-            let pops = POP_TICKS * count;
-            let total = FLASH_TICKS + pops;
+            let pops = self.rules.pop * count;
+            let total = self.rules.flash + pops;
             for (k, &i) in idx.iter().enumerate() {
                 self.set_state(i, MATCHED, total);
-                self.aux[i] = POP_TICKS * (count - 1 - k as i32) | (pops << 16);
+                self.aux[i] = self.rules.pop * (count - 1 - k as i32) | (pops << 16);
                 self.chain[i] = 0;
             }
             self.has_matched = true;
             self.score += n as i64 * 10;
-            if n >= 4 {
-                for &w in combo_garbage(n) {
-                    self.outbox.push(slab(w, 1));
+            if self.rules.combos_send {
+                let rules = Arc::clone(&self.rules);
+                for &w in rules.combo_slabs(n) {
+                    self.outbox.push(slab(w as i32, 1));
                     self.sent += w as i64;
                 }
+            }
+            if n >= 4 {
                 self.fx_combo = n as i64;
                 self.score += (n as i64 - 3) * 20;
             }
@@ -686,7 +696,7 @@ impl Board {
                 self.score += 50 * (self.chain_n - 1);
             }
             if n >= 4 || chained {
-                self.stop_t = self.stop_t.max(STOP_TICKS);
+                self.stop_t = self.stop_t.max(self.rules.stop as i64);
                 self.fx_t = FX_TICKS;
             }
             self.convert_touching(&idx, total);
@@ -756,11 +766,11 @@ impl Board {
         queue.sort_unstable_by_key(|&i| (dist[i], ROWS - 1 - i / W, i % W));
         let pops: i32 = queue
             .iter()
-            .map(|&i| if self.reveal[i] != 0 { REVEAL_TICKS } else { SHELL_POP_TICKS })
+            .map(|&i| if self.reveal[i] != 0 { self.rules.reveal } else { self.rules.shell_pop })
             .sum();
         let mut elapsed = 0;
         for &i in &queue {
-            elapsed += if self.reveal[i] != 0 { REVEAL_TICKS } else { SHELL_POP_TICKS };
+            elapsed += if self.reveal[i] != 0 { self.rules.reveal } else { self.rules.shell_pop };
             self.set_state(i, MATCHED, total + pops);
             self.aux[i] = (pops - elapsed) | (pops << 16);
         }
@@ -772,9 +782,11 @@ impl Board {
                 return;
             }
         }
-        let rows = (self.chain_n - 1).min(BUF as i64);
-        self.outbox.push(slab(W as i32, rows as i32));
-        self.sent += W as i64 * rows;
+        let rows = if self.rules.chains_send { self.rules.chain_rows_at(self.chain_n) } else { 0 };
+        if rows > 0 {
+            self.outbox.push(slab(W as i32, rows as i32));
+            self.sent += W as i64 * rows;
+        }
         self.chain_n = 1;
     }
 
@@ -788,7 +800,7 @@ impl Board {
             self.gar_t -= 1;
         } else if !self.has_matched && self.chain_n == 1 && self.drop_garbage(self.gar_q[0]) {
             self.gar_q.remove(0);
-            self.gar_t = GARBAGE_GAP;
+            self.gar_t = self.rules.garbage_gap as i64;
         }
     }
 
@@ -809,7 +821,7 @@ impl Board {
                 let c = y * W + x;
                 self.color[c] = GARBAGE;
                 self.gid[c] = self.next_gid as i32;
-                self.set_state(c, FALL, FALL_TICKS);
+                self.set_state(c, FALL, self.rules.fall);
             }
         }
         self.next_gid += 1;
@@ -831,18 +843,18 @@ impl Board {
             }
             return;
         }
-        self.health = HEALTH_TICKS;
-        if input & RAISE != 0 {
+        self.health = self.rules.health as i64;
+        if input & RAISE != 0 && self.rules.manual_raise {
             self.stop_t = 0;
-            self.rise += RAISE_SPEED;
+            self.rise += self.rules.raise_speed as i64;
         } else if self.stop_t > 0 {
             self.stop_t -= 1;
             return;
         } else {
-            self.rise += 1 + self.age / SPEEDUP_TICKS;
+            self.rise += self.rules.rise_at(self.age);
         }
-        if self.rise >= ROW_UNITS {
-            self.rise = if self.push_row() { self.rise - ROW_UNITS } else { ROW_UNITS };
+        if self.rise >= (self.rules.row_units as i64) {
+            self.rise = if self.push_row() { self.rise - (self.rules.row_units as i64) } else { self.rules.row_units as i64 };
         }
     }
 
@@ -883,7 +895,7 @@ impl Board {
     }
 
     fn matchable(&self, i: usize) -> bool {
-        self.color[i] != 0 && self.color[i] <= COLORS && self.resting(i)
+        self.color[i] != 0 && self.color[i] <= self.rules.colors && self.resting(i)
     }
 
     fn set_state(&mut self, i: usize, s: u8, t: i32) {
@@ -956,17 +968,21 @@ impl Board {
         t
     }
 
-    /// A row of panels with no triples against itself or the two rows from `above` up.
+    /// A row of panels with no triples against itself or the two rows from `above` up, as far
+    /// as the colours allow. With three or more there's always a colour that fits; with fewer,
+    /// a cell where none does takes whatever comes.
     fn make_row(&mut self, above: usize) -> [u8; W] {
         let mut row = [0u8; W];
         for x in 0..W {
+            let triple = |row: &[u8; W], b: &Board, c: u8| {
+                let h = x >= 2 && row[x - 1] == c && row[x - 2] == c;
+                let v = above >= 1 && b.color[above * W + x] == c && b.color[(above - 1) * W + x] == c;
+                h || v
+            };
+            let stuck = (1..=self.rules.colors).all(|c| triple(&row, self, c));
             loop {
                 let c = self.rand_color();
-                let h = x >= 2 && row[x - 1] == c && row[x - 2] == c;
-                let v = above >= 1
-                    && self.color[above * W + x] == c
-                    && self.color[(above - 1) * W + x] == c;
-                if !(h || v) {
+                if stuck || !triple(&row, self, c) {
                     row[x] = c;
                     break;
                 }
@@ -976,7 +992,7 @@ impl Board {
     }
 
     fn rand_color(&mut self) -> u8 {
-        (self.rand() % COLORS as u32) as u8 + 1
+        (self.rand() % self.rules.colors as u32) as u8 + 1
     }
 
     fn rand(&mut self) -> u32 {

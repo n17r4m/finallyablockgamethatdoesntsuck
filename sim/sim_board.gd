@@ -24,9 +24,15 @@ const STATE := ["color", "st", "tm", "aux", "chain", "gid", "reveal", "next_row"
 	"outbox", "gar_q", "gar_t", "gar_side", "next_gid", "fx_combo", "fx_chain", "fx_t",
 	"age", "sent", "best_chain", "swaps",
 	"time_rate", "world_acc", "ramp_t", "cracking", "crack_hang"]
+## Vars that aren't game state, on purpose: the same all match long, not hashed, shared by copies.
+const NOT_STATE := ["rules"]
 
 # Per cell, row-major, y = 0 is the top of the hidden buffer.
-var color := PackedByteArray() # 0 empty, 1..COLORS panel, GARBAGE
+## What this board plays by. Not game state: it never changes during a match, so it isn't
+## hashed, and copies share it.
+var rules: SimRules
+
+var color := PackedByteArray() # 0 empty, 1..colours panel, GARBAGE
 var st := PackedByteArray() # state enum
 var tm := PackedInt32Array() # ticks left in the current state
 var aux := PackedInt32Array() # MATCHED: pop tick | flash-end tick << 16
@@ -41,7 +47,7 @@ var prev_input := 0
 var hold := 0
 var rise := 0
 var stop_t := 0
-var health := SimConst.HEALTH_TICKS # drains while topped out; 0 = lost
+var health := SimConst.HEALTH_TICKS # drains while topped out; 0 = lost. Set from rules.
 var rng := 1
 var score := 0
 var lost := false
@@ -74,8 +80,11 @@ var cracking := false # some garbage on this board is cracking
 var crack_hang := 0 # world ticks left of revealed panels hanging after a crack
 
 
-static func create(game_seed: int) -> SimBoard:
+## A fresh well. rules must be valid; null plays the standard rules.
+static func create(game_seed: int, board_rules: SimRules = null) -> SimBoard:
 	var b := SimBoard.new()
+	b.rules = board_rules if board_rules else SimRules.shared_standard()
+	b.health = b.rules.health
 	b.color.resize(N)
 	b.st.resize(N)
 	b.tm.resize(N)
@@ -94,6 +103,7 @@ static func create(game_seed: int) -> SimBoard:
 
 func copy() -> SimBoard:
 	var b := SimBoard.new()
+	b.rules = rules
 	for f: String in STATE:
 		var v: Variant = get(f)
 		b.set(f, v.duplicate() if typeof(v) >= TYPE_PACKED_BYTE_ARRAY else v)
@@ -162,19 +172,19 @@ func step(input: int, live := true) -> void:
 
 ## Ease the world clock toward bullet time while garbage cracks, and back after.
 func _ease_time() -> void:
-	var target := SimConst.TIME_SLOW if cracking or crack_hang > 0 else SimConst.TIME_UNIT
+	var target := rules.time_slow if cracking or crack_hang > 0 else SimConst.TIME_UNIT
 	if time_rate == target:
 		ramp_t = 0
 		return
 	ramp_t += 1
-	if ramp_t >= SimConst.TIME_RAMP:
+	if ramp_t >= rules.time_ramp:
 		ramp_t = 0
 		time_rate += 1 if target > time_rate else -1
 
 
 func receive_garbage(slabs: PackedInt32Array) -> void:
 	if gar_q.is_empty():
-		gar_t = SimConst.GARBAGE_DELAY
+		gar_t = rules.garbage_delay
 	gar_q.append_array(slabs)
 
 
@@ -202,7 +212,7 @@ func _handle_input(input: int) -> void:
 	var dir := input & SimConst.DIRS
 	if dir != 0 and dir == prev_input & SimConst.DIRS:
 		hold += 1
-		if hold >= SimConst.REPEAT_DELAY and (hold - SimConst.REPEAT_DELAY) % SimConst.REPEAT_RATE == 0:
+		if hold >= rules.repeat_delay and (hold - rules.repeat_delay) % rules.repeat_rate == 0:
 			_move_cursor(dir)
 	else:
 		hold = 0
@@ -244,9 +254,9 @@ func _try_swap() -> void:
 		tm[k] = 0
 		chain[k] = 0
 	if color[j] != 0:
-		_set_state(j, SWAP_R, SimConst.SWAP_TICKS) # arrived from the left
+		_set_state(j, SWAP_R, rules.swap) # arrived from the left
 	if color[i] != 0:
-		_set_state(i, SWAP_L, SimConst.SWAP_TICKS) # arrived from the right
+		_set_state(i, SWAP_L, rules.swap) # arrived from the right
 
 
 # --- per-cell update ----------------------------------------------------------
@@ -290,7 +300,7 @@ func _update_cells(world := true) -> void:
 					tm[i] -= 1
 					if tm[i] == 0:
 						st[i] = FALL
-						tm[i] = SimConst.FALL_TICKS
+						tm[i] = rules.fall
 				FALL:
 					_fall(i)
 				MATCHED:
@@ -306,12 +316,12 @@ func _fall(i: int) -> void:
 		tm[i] -= 1
 		if tm[i] <= 0:
 			_move(i, b)
-			tm[b] = SimConst.FALL_TICKS
+			tm[b] = rules.fall
 	elif b < N and (st[b] == FALL or st[b] == HOVER):
 		tm[i] = maxi(tm[i] - 1, 1) # follow the block below as soon as it moves
 	else:
 		st[i] = LAND
-		tm[i] = SimConst.LAND_TICKS
+		tm[i] = rules.land
 		need_scan = true
 
 
@@ -335,7 +345,7 @@ func _update_slab(i: int) -> void:
 	match st[i]:
 		HOVER:
 			if _slab_tick(r) == 0:
-				_slab_set(r, FALL, SimConst.FALL_TICKS)
+				_slab_set(r, FALL, rules.fall)
 		FALL:
 			var rest := y1 + 1 >= ROWS
 			var moving := false
@@ -355,7 +365,7 @@ func _update_slab(i: int) -> void:
 				for y in range(y1, y0 - 1, -1):
 					for k in w:
 						_move(y * W + x0 + k, (y + 1) * W + x0 + k)
-				_slab_set(PackedInt32Array([x0, y0 + 1, w, h]), FALL, SimConst.FALL_TICKS)
+				_slab_set(PackedInt32Array([x0, y0 + 1, w, h]), FALL, rules.fall)
 		MATCHED:
 			has_matched = true
 			if _slab_tick(r) == 0:
@@ -365,12 +375,12 @@ func _update_slab(i: int) -> void:
 					var c := y1 * W + x0 + k
 					var col := reveal[c]
 					_clear_cell(c)
-					color[c] = col if col != 0 else _rand() % SimConst.COLORS + 1
+					color[c] = col if col != 0 else _rand() % rules.colors + 1
 					chain[c] = 1
 					var below := c + W
 					if below < N and (color[below] == 0 or st[below] == HOVER or st[below] == FALL):
-						_set_state(c, HOVER, SimConst.GARBAGE_HANG_TICKS) # hang before the drop
-				crack_hang = SimConst.GARBAGE_HANG_TICKS + SimConst.FALL_TICKS * 4
+						_set_state(c, HOVER, rules.garbage_hang) # hang before the drop
+				crack_hang = rules.garbage_hang + rules.fall * 4
 				if h > 1:
 					_slab_set(PackedInt32Array([x0, y0, w, h - 1]), NORMAL, 0)
 				need_scan = true
@@ -396,7 +406,7 @@ func _apply_support() -> void:
 			if b >= N or not _resting(i):
 				continue
 			if color[b] == 0:
-				_set_state(i, HOVER, SimConst.HOVER_TICKS)
+				_set_state(i, HOVER, rules.hover)
 			elif st[b] == HOVER or st[b] == FALL:
 				_set_state(i, st[b], tm[b]) # join the column below so it moves as one
 
@@ -418,7 +428,7 @@ func _support_slab(i: int) -> void:
 		else:
 			return # resting on something
 	if join < 0:
-		_slab_set(r, HOVER, SimConst.HOVER_TICKS)
+		_slab_set(r, HOVER, rules.hover)
 	else:
 		_slab_set(r, st[join], tm[join])
 
@@ -460,18 +470,19 @@ func _scan() -> void:
 			chained = chained or chain[i] == 1
 	var n := idx.size()
 	if n > 0:
-		var pops := SimConst.POP_TICKS * n
-		var total := SimConst.FLASH_TICKS + pops
+		var pops := rules.pop * n
+		var total := rules.flash + pops
 		for k in n:
 			_set_state(idx[k], MATCHED, total)
-			aux[idx[k]] = SimConst.POP_TICKS * (n - 1 - k) | (pops << 16)
+			aux[idx[k]] = rules.pop * (n - 1 - k) | (pops << 16)
 			chain[idx[k]] = 0
 		has_matched = true
 		score += n * 10
-		if n >= 4:
-			for w: int in SimConst.COMBO_GARBAGE.get(n, [6, 6, 6]):
+		if rules.combos_send:
+			for w: int in rules.combo_slabs(n):
 				outbox.append(SimConst.slab(w, 1))
 				sent += w
+		if n >= 4:
 			fx_combo = n
 			score += (n - 3) * 20
 		if chained:
@@ -480,7 +491,7 @@ func _scan() -> void:
 			best_chain = maxi(best_chain, chain_n)
 			score += 50 * (chain_n - 1)
 		if n >= 4 or chained:
-			stop_t = maxi(stop_t, SimConst.STOP_TICKS)
+			stop_t = maxi(stop_t, rules.stop)
 			fx_t = SimConst.FX_TICKS
 		_convert_touching(idx, total)
 	# Anything that came to rest without matching is no longer part of a chain.
@@ -510,7 +521,7 @@ func _convert_touching(matched: PackedInt32Array, total: int) -> void:
 					todo.append(y * W + r[0] + k)
 			# Decide now what the bottom row will become, so it can be revealed cell by cell.
 			for k in r[2]:
-				reveal[(r[1] + r[3] - 1) * W + r[0] + k] = _rand() % SimConst.COLORS + 1
+				reveal[(r[1] + r[3] - 1) * W + r[0] + k] = _rand() % rules.colors + 1
 	if seen.is_empty():
 		return
 	# Ripple: breadth-first distance from the matched panels through cracking cells.
@@ -542,7 +553,7 @@ func _convert_touching(matched: PackedInt32Array, total: int) -> void:
 	for key in keys:
 		var i := key & 0xFFFFFF
 		cells.append(i)
-		var d := SimConst.REVEAL_TICKS if reveal[i] != 0 else SimConst.SHELL_POP_TICKS
+		var d := rules.reveal if reveal[i] != 0 else rules.shell_pop
 		durs.append(d)
 		pops += d
 	var elapsed := 0
@@ -570,8 +581,10 @@ func _check_chain_end() -> void:
 	for i in N:
 		if chain[i] or (st[i] == MATCHED and gid[i] == 0):
 			return
-	outbox.append(SimConst.slab(W, mini(chain_n - 1, SimConst.BUF)))
-	sent += W * mini(chain_n - 1, SimConst.BUF)
+	var rows := rules.chain_rows_at(chain_n) if rules.chains_send else 0
+	if rows > 0:
+		outbox.append(SimConst.slab(W, rows))
+		sent += W * rows
 	chain_n = 1
 
 
@@ -584,7 +597,7 @@ func _feed_garbage() -> void:
 		gar_t -= 1
 	elif not has_matched and chain_n == 1 and _drop_garbage(gar_q[0]):
 		gar_q.remove_at(0)
-		gar_t = SimConst.GARBAGE_GAP
+		gar_t = rules.garbage_gap
 
 
 ## Spawns a slab at the top of the hidden buffer. Waits while that spot is occupied.
@@ -601,7 +614,7 @@ func _drop_garbage(slab: int) -> bool:
 			var c := y * W + x
 			color[c] = SimConst.GARBAGE
 			gid[c] = next_gid
-			_set_state(c, FALL, SimConst.FALL_TICKS)
+			_set_state(c, FALL, rules.fall)
 	next_gid += 1
 	gar_side ^= 1
 	return true
@@ -618,17 +631,17 @@ func _rise(input: int) -> void:
 			health -= 1
 			lost = health <= 0
 		return
-	health = SimConst.HEALTH_TICKS
-	if input & SimConst.RAISE:
+	health = rules.health
+	if input & SimConst.RAISE and rules.manual_raise:
 		stop_t = 0
-		rise += SimConst.RAISE_SPEED
+		rise += rules.raise_speed
 	elif stop_t > 0:
 		stop_t -= 1
 		return
 	else:
-		rise += 1 + age / SimConst.SPEEDUP_TICKS
-	if rise >= SimConst.ROW_UNITS:
-		rise = rise - SimConst.ROW_UNITS if _push_row() else SimConst.ROW_UNITS
+		rise += rules.rise_at(age)
+	if rise >= rules.row_units:
+		rise = rise - rules.row_units if _push_row() else rules.row_units
 
 
 func _push_row() -> bool:
@@ -673,7 +686,7 @@ func _resting(i: int) -> bool:
 
 
 func _matchable(i: int) -> bool:
-	return color[i] != 0 and color[i] <= SimConst.COLORS and _resting(i)
+	return color[i] != 0 and color[i] <= rules.colors and _resting(i)
 
 
 func _set_state(i: int, s: int, t: int) -> void:
@@ -738,20 +751,29 @@ func _slab_tick(r: PackedInt32Array) -> int:
 	return t
 
 
-## A row of panels with no triples against itself or the two rows from `above` up.
+## A row of panels with no triples against itself or the two rows from `above` up, as far as
+## the colours allow. With three or more there's always a colour that fits; with fewer, a cell
+## where none does takes whatever comes.
 func _make_row(above: int) -> PackedByteArray:
 	var row := PackedByteArray()
 	row.resize(W)
 	for x in W:
+		var stuck := true
+		for k in range(1, rules.colors + 1):
+			stuck = stuck and _triple(row, above, x, k)
 		var c := 0
 		while true:
-			c = _rand() % SimConst.COLORS + 1
-			var h := x >= 2 and row[x - 1] == c and row[x - 2] == c
-			var v := above >= 1 and color[above * W + x] == c and color[(above - 1) * W + x] == c
-			if not (h or v):
+			c = _rand() % rules.colors + 1
+			if stuck or not _triple(row, above, x, c):
 				break
 		row[x] = c
 	return row
+
+
+func _triple(row: PackedByteArray, above: int, x: int, c: int) -> bool:
+	var h := x >= 2 and row[x - 1] == c and row[x - 2] == c
+	var v := above >= 1 and color[above * W + x] == c and color[(above - 1) * W + x] == c
+	return h or v
 
 
 func _rand() -> int: # xorshift32, kept in the low 32 bits of a 64-bit int

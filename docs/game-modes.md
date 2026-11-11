@@ -61,8 +61,9 @@ inputs plus an incoming garbage stream, which coupled modes feed from inside the
    [server-admin.md](server-admin.md)). Today's 1v1, on this host, until about 30 active players.
 1. **Ruleset as data**, in GDScript and Rust, with replay format 2 carrying it. The default
    ruleset plays today's game exactly. Done so far: the `Rules` data, its bytes and fingerprint
-   (`sim/sim_rules.gd`, `rust/sim/src/rules.rs`, the engine contract). Next: the sim reads it
-   instead of `SimConst`, then replays and the protocol carry it, then a Rules page.
+   (`sim/sim_rules.gd`, `rust/sim/src/rules.rs`, the engine contract), and both sims, the
+   views, controls and CPU players reading each board's rules. Next: replays and the protocol
+   carry it, then a Rules page.
 2. **N boards, teams and routing** in the sim. The P1/P2 mirror fuzz widens to every seat order.
 3. **N-seat `RollbackSession`**, including several local seats on one device.
 4. **Server rooms** with a host, seats, teams and a validated ruleset.
