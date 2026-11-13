@@ -14,6 +14,7 @@ var _room: LineEdit
 var _quick: Button
 var _cpu: OptionButton
 var _level: OptionButton
+var _format: OptionButton
 var _blurb: Label
 var _columns: BoxContainer
 var _online: VBoxContainer
@@ -89,9 +90,19 @@ func _ready() -> void:
 	_level.select(CpuPlayer.LEVELS.find(Net.cpu_level))
 	if Net.cpu_name in CpuPlayer.OPPONENTS:
 		_cpu.select(CpuPlayer.OPPONENTS.keys().find(Net.cpu_name))
+	_format = OptionButton.new()
+	Controls.size_for_fingers(_format)
+	_format.tooltip_text = "Who plays: you and CPU teammates against CPU opponents"
+	for f: String in Net.FORMATS:
+		_format.add_item(f if f != "1v1" else "1v1: you against them")
+	_format.select(maxi(0, Net.FORMATS.values().find(Array(Net.practice_teams))))
+	_format.item_selected.connect(func(i: int) -> void:
+		Net.practice_teams = PackedInt32Array(Net.FORMATS.values()[i]) if i > 0 else PackedInt32Array())
 	row.add_child(_cpu)
 	row.add_child(_level)
 	_offline.add_child(row)
+	_format.size_flags_horizontal = SIZE_EXPAND_FILL
+	_offline.add_child(_format)
 	_blurb = Label.new()
 	_blurb.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_blurb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -123,6 +134,10 @@ func _ready() -> void:
 
 	var args := Scenes.launch_args
 	Scenes.launch_args = {}
+	# --format=2v2 and so on, for offline play against CPUs
+	if args.has("format") and str(args.format) in Net.FORMATS:
+		Net.practice_teams = PackedInt32Array(Net.FORMATS[str(args.format)]) if args.format != "1v1" else PackedInt32Array()
+		_format.select(Net.FORMATS.keys().find(str(args.format)))
 	if args.has("host"):
 		_host()
 	elif args.has("join"):
@@ -173,6 +188,7 @@ func _fit_to_screen() -> void:
 func _on_cpu_selected(i: int) -> void:
 	var names: Array = CpuPlayer.OPPONENTS.keys()
 	_level.disabled = i >= names.size()
+	_format.disabled = i >= names.size()
 	_blurb.text = CpuPlayer.OPPONENTS[names[i]].blurb if i < names.size() else "Just you and the stack."
 
 

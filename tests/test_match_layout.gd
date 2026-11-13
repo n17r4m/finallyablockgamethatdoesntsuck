@@ -8,11 +8,13 @@ const SIZES: Array[Vector2i] = [Vector2i(1280, 720), Vector2i(1920, 1080), Vecto
 		Vector2i(915, 412), Vector2i(800, 360), Vector2i(412, 915), Vector2i(360, 800),
 		Vector2i(320, 568), Vector2i(768, 1024), Vector2i(600, 600)]
 const FINGER_DP := 38.0 # the smallest cell once your board goes big, on the smallest phone here
+const FINGER_DP_MANY := 30.0 # the same with five other boards beside yours
+const MANY := [[0, 0, 1, 1], [0, 0, 0, 1, 1, 1], [0, 1, 2]]
 const W := SimConst.W
 const H := SimConst.H
 const Y := H - 1 # bottom visible row
 const ROW := [1, 2, 3, 4, 1, 2]
-const EXPECTED_CHECKS := 301
+const EXPECTED_CHECKS := 711
 
 var _failed := 0
 var _ran := 0
@@ -34,6 +36,8 @@ func _initialize() -> void:
 		for size: Vector2i in SIZES:
 			for setup: Array in [["Overmind", 0], ["Overmind", 1], ["", 0]]:
 				await _test_layout(renderer, size, setup[0], setup[1])
+			for teams: Array in MANY:
+				await _test_many(renderer, size, PackedInt32Array(teams))
 		await _test_desktop_unchanged(renderer)
 		await _test_turning_the_phone(renderer)
 	_failed += EXPECTED_CHECKS - _ran # a script error stops a test without failing a check
@@ -49,6 +53,7 @@ func _start(size: Vector2i, cpu: String, idx: int) -> Node:
 	_net.cpu_name = cpu
 	_net.cpu_level = "normal"
 	_net.demo = false
+	_net.match_teams = PackedInt32Array()
 	var scene: Node = load("res://scenes/match.tscn").instantiate()
 	root.add_child(scene)
 	await process_frame
@@ -86,6 +91,41 @@ func _test_layout(renderer: String, size: Vector2i, cpu: String, idx: int) -> vo
 		_check(dp >= FINGER_DP, "cells are %.1f dp: %s" % [dp, what])
 	_check(_every_cell_maps(mine), "touches land on the cell drawn there: " + what)
 	_check(_drag_moves_block(mine), "a drag moves the block under it: " + what)
+	scene.free()
+
+
+## More than two boards: all of them on screen and apart, and yours still big enough to play.
+func _test_many(renderer: String, size: Vector2i, teams: PackedInt32Array) -> void:
+	root.size = size
+	_net.remote_id = 0
+	_net.local_idx = 0
+	_net.match_seed = 5
+	_net.cpu_name = "Overmind"
+	_net.cpu_level = "normal"
+	_net.demo = false
+	_net.match_teams = teams
+	var scene: Node = load("res://scenes/match.tscn").instantiate()
+	root.add_child(scene)
+	await process_frame
+	await process_frame
+	var screen := root.get_visible_rect()
+	var what := "%s %s teams %s" % [renderer, size, teams]
+	var rects: Array[Rect2] = []
+	for p in teams.size():
+		var r := _board_rect(scene._views[p])
+		rects.append(r)
+		_check(screen.encloses(r), "board %d %s on screen %s: %s" % [p, r, screen.size, what])
+	var apart := true
+	for a in rects.size():
+		for b in range(a + 1, rects.size()):
+			apart = apart and not rects[a].intersects(rects[b])
+	_check(apart, "boards apart: %s %s" % [what, rects])
+	var mine: Node = scene._views[0]
+	if float(size.x) / size.y < scene.SIDE_BY_SIDE_ASPECT:
+		var dp: float = (rects[0].size.x / W) / _controls.dp_scale()
+		_check(dp >= FINGER_DP_MANY, "cells are %.1f dp: %s" % [dp, what])
+	_check(_every_cell_maps(mine), "touches land on the cell drawn there: " + what)
+	_net.match_teams = PackedInt32Array()
 	scene.free()
 
 

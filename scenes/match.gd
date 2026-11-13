@@ -23,6 +23,11 @@ const CAM_FOV := 42.0
 ## the opponent's small beside it. Two equal boards would leave cells of 20 dp on a phone.
 const SIDE_BY_SIDE_ASPECT := 1.24
 const OPPONENT_SCALE := 0.25
+# With more than two boards, the others go small in a grid beside yours, as large as fits.
+const OTHERS_MAX_SCALE := 0.5
+const OTHERS_MIN_SCALE := 0.13
+const NAME_ROOM := 2.4 # under a small board: its name and what's coming, in cells of your board
+const TEAM_GAP := 0.8 # between teams, when the small boards are all in one row
 # The narrow layout, in cells of your board.
 const WELL := SimConst.W + 0.3
 const GAP := 0.2
@@ -41,6 +46,7 @@ var _acc := 0 # tick-units * 1e6, so no float drift
 var _last_usec := 0
 var _views: Array[Node] = [] # BoardRenderer3D or BoardRenderer2D, indexed by board
 var _cpu: CpuPlayer # offline opponent on board 1
+var _cpus: Array[CpuPlayer] = [] # offline, per seat: who plays it, null for you
 var _pilot: CpuPlayer # demo mode: a CPU on your board too
 var _over_msec := -1 # when the game ended
 var _cam: Camera3D
@@ -56,14 +62,33 @@ func _ready() -> void:
 	# Input delay only hides network lag from rollback, so offline play has none.
 	var delay: int = 0 if _offline else Config.get_value("net", "input_delay_frames") * SimConst.TICKS_PER_FRAME
 	var solo := _offline and Net.cpu_name == ""
-	session = RollbackSession.new(Net.match_seed, Net.local_idx, delay, _offline, solo, Config.get_value("sim", "backend"), Net.match_rules)
+	session = RollbackSession.new(Net.match_seed, Net.local_idx, delay, _offline, solo, Config.get_value("sim", "backend"), Net.match_rules, Net.match_teams)
 	if _offline and not solo:
-		_cpu = CpuPlayer.opponent(Net.cpu_name, Net.cpu_level, Net.match_seed)
+		_cpus.resize(session.seats())
+		var teams := session.state.teams
+		# The first opponent is the one you picked; the rest, teammates included, take the other
+		# personalities in turn, so no two boards play alike.
+		var names: Array = CpuPlayer.OPPONENTS.keys()
+		var order: Array = [Net.cpu_name] + names.filter(func(n: String) -> bool: return n != Net.cpu_name)
+		var next_name := 1
+		var picked_taken := false
+		for p in session.seats():
+			if p == Net.local_idx:
+				continue
+			var name: String
+			if teams[p] != teams[Net.local_idx] and not picked_taken:
+				name = Net.cpu_name
+				picked_taken = true
+			else:
+				name = order[next_name % order.size()]
+				next_name += 1
+			_cpus[p] = CpuPlayer.opponent(name, Net.cpu_level, Net.match_seed + p)
+		_cpu = _cpus[1 - Net.local_idx] if session.seats() == 2 else null
 		if Net.demo:
 			_pilot = CpuPlayer.opponent("Overmind", Net.cpu_level, Net.match_seed + 1)
 	session.desynced.connect(_on_desynced)
-	print("match start seed=%d idx=%d %s delay=%d rules=%s" % [Net.match_seed, Net.local_idx,
-			"offline" if _offline else "online", delay, _rules_name()])
+	print("match start seed=%d idx=%d %s delay=%d rules=%s teams=%s" % [Net.match_seed, Net.local_idx,
+			"offline" if _offline else "online", delay, _rules_name(), session.state.teams])
 	if not _offline:
 		session.outgoing.connect(Net.send)
 		Net.packet.connect(session.receive)
@@ -150,7 +175,7 @@ func _build_3d() -> void:
 	var we := WorldEnvironment.new()
 	we.environment = env
 	world.add_child(we)
-	for p in 2:
+	for p in session.seats():
 		var v := BoardRenderer3D.new()
 		v.label = _label(p)
 		v.visible = not (_solo() and p == 1)
@@ -159,7 +184,7 @@ func _build_3d() -> void:
 
 
 func _build_2d() -> void:
-	for p in 2:
+	for p in session.seats():
 		var v := BoardRenderer2D.new()
 		v.label = _label(p)
 		v.visible = not (_solo() and p == 1)
@@ -188,7 +213,73 @@ func _narrow_height() -> float:
 	return ABOVE_BOARD + SimConst.H + BELOW_BOARD + 2 * EDGE
 
 
+## Everyone but you, in the order they're laid out: your team first, then each other team.
+func _others() -> Array[int]:
+	var me := Net.local_idx
+	var teams := session.state.teams
+	var out: Array[int] = []
+	for p in teams.size():
+		if p != me and teams[p] == teams[me]:
+			out.append(p)
+	for t in session.state.team_count:
+		if t != teams[me]:
+			for p in teams.size():
+				if teams[p] == t:
+					out.append(p)
+	return out
+
+
+## For more than two boards: how many columns the small boards take, and their scale. Picks
+## whatever leaves your board biggest on this screen, then the biggest small boards.
+func _grid(view: Vector2) -> Vector2:
+	var k := session.seats() - 1
+	var best := Vector2(1, OTHERS_MIN_SCALE)
+	var best_cell := -1.0
+	for cols in range(1, k + 1):
+		var rows := ceili(float(k) / cols)
+		var fit := ((SimConst.H + BELOW_BOARD) / rows - NAME_ROOM - GAP) / (SimConst.H + BELOW_BOARD)
+		var s := minf(OTHERS_MAX_SCALE, fit)
+		if s < OTHERS_MIN_SCALE:
+			continue
+		var cell := minf(view.x / _grid_width(Vector2(cols, s)), view.y / _narrow_height())
+		if cell > best_cell + 0.01 or (absf(cell - best_cell) <= 0.01 and s > best.y):
+			best = Vector2(cols, s)
+			best_cell = cell
+	return best
+
+
+func _grid_width(grid: Vector2) -> float:
+	var cols := int(grid.x)
+	return WELL + 2 * EDGE + cols * (GAP + WELL * grid.y) + _team_gaps(cols, session.seats() - 1) * TEAM_GAP
+
+
+## How many team gaps come before small board i, when they're all in one row: none otherwise.
+func _team_gaps(cols: int, i: int) -> int:
+	if cols < session.seats() - 1:
+		return 0
+	var others := _others()
+	var teams := session.state.teams
+	var gaps := 0
+	var before := Net.local_idx
+	for k in mini(i + 1, others.size()):
+		if teams[others[k]] != teams[before]:
+			gaps += 1
+		before = others[k]
+	return gaps
+
+
+## Where small board i sits, in cells from your well's top left: its well's top left.
+func _grid_at(i: int, grid: Vector2) -> Vector2:
+	var cols := int(grid.x)
+	var s := grid.y
+	return Vector2(WELL + GAP + (i % cols) * (WELL * s + GAP) + _team_gaps(cols, i) * TEAM_GAP,
+			(i / cols) * ((SimConst.H + BELOW_BOARD) * s + NAME_ROOM + GAP))
+
+
 func _layout_3d(view: Vector2) -> void:
+	if session.seats() > 2:
+		_layout_3d_many(view)
+		return
 	if not _narrow(view):
 		_cam.position = Vector3(0, CAM_Y, CAM_Z)
 		for p in 2:
@@ -206,7 +297,27 @@ func _layout_3d(view: Vector2) -> void:
 	_views[1 - me].arrange(Vector3(them_x, them_y, 0), OPPONENT_SCALE, true)
 
 
+func _layout_3d_many(view: Vector2) -> void:
+	var grid := _grid(view)
+	var width := _grid_width(grid)
+	var seen := maxf(_narrow_height(), width * view.y / view.x) # cells top to bottom
+	var spare := seen - _narrow_height()
+	var bottom := -SimConst.H / 2.0 - BELOW_BOARD - EDGE - minf(spare / 2.0, HINT_ROOM)
+	_cam.position = Vector3(0, bottom + seen / 2.0, seen / 2.0 / tan(deg_to_rad(CAM_FOV / 2.0)))
+	var left := -width / 2.0 + EDGE
+	var top := SimConst.H / 2.0
+	_views[Net.local_idx].arrange(Vector3(left + WELL / 2.0, 0, 0), 1.0)
+	var others := _others()
+	for i in others.size():
+		var at := _grid_at(i, grid)
+		var s := grid.y
+		_views[others[i]].arrange(Vector3(left + at.x + WELL * s / 2.0, top - at.y - SimConst.H * s / 2.0, 0), s, true)
+
+
 func _layout_2d(view: Vector2) -> void:
+	if session.seats() > 2:
+		_layout_2d_many(view)
+		return
 	if not _narrow(view):
 		# Boards keep their place on a 1280 wide screen, and stay centred on a wider one.
 		var inset := (view.x - 1280.0) / 2.0
@@ -234,6 +345,31 @@ func _layout_2d(view: Vector2) -> void:
 	theirs.compact = true
 
 
+func _layout_2d_many(view: Vector2) -> void:
+	var grid := _grid(view)
+	var s := grid.y
+	var width := _grid_width(grid)
+	var cell := minf(view.x / width, view.y / _narrow_height())
+	var unit := cell / BoardRenderer2D.CELL
+	var dp := Controls.dp_scale()
+	var spare := view.y - _narrow_height() * cell
+	var top := view.y - (BELOW_BOARD + EDGE + SimConst.H) * cell - minf(spare / 2.0, HINT_ROOM * cell)
+	var left := (view.x - (width - 2 * EDGE) * cell) / 2.0
+	var mine: BoardRenderer2D = _views[Net.local_idx]
+	mine.position = Vector2(left + 0.15 * cell, top)
+	mine.scale = Vector2.ONE * unit
+	mine.text_scale = 17.0 * dp / (20.0 * unit)
+	mine.compact = false
+	var others := _others()
+	for i in others.size():
+		var v: BoardRenderer2D = _views[others[i]]
+		var at := _grid_at(i, grid)
+		v.position = Vector2(left + (at.x + 0.15 * s) * cell, top + at.y * cell)
+		v.scale = Vector2.ONE * unit * s
+		v.text_scale = 13.0 * dp / (20.0 * unit * s)
+		v.compact = true
+
+
 func _solo() -> bool:
 	return session.state.solo
 
@@ -241,8 +377,13 @@ func _solo() -> bool:
 func _label(p: int) -> String:
 	if p == Net.local_idx:
 		return "Overmind (%s)" % Net.cpu_level if _pilot else "YOU"
-	if _cpu:
+	var ally := session.seats() > 2 and session.state.teams[p] == session.state.teams[Net.local_idx]
+	if not _cpus.is_empty() and _cpus[p]:
+		if session.seats() > 2:
+			return ("ALLY %s" if ally else "%s") % _cpus[p].name
 		return "%s (%s)" % [Net.cpu_name, Net.cpu_level]
+	if session.seats() > 2:
+		return "ALLY" if ally else "THEM"
 	return Net.opponent_name.to_upper() if Net.opponent_name != "" else "THEM"
 
 
@@ -276,8 +417,9 @@ func _process(delta: float) -> void:
 		var my_board := session.state.boards[me]
 		if session.input_open():
 			session.set_local_input(_pilot.next_input(my_board) if _pilot else Controls.sample(my_board))
-		if _cpu:
-			session.set_remote_input(_cpu.next_input(session.state.boards[1 - me]))
+		for p in _cpus.size():
+			if _cpus[p]:
+				session.set_seat_input(p, _cpus[p].next_input(session.state.boards[p]))
 		session.advance(due)
 	if _pilot and session.state.winner != -1 and session.state.tick % (SimConst.TICK_HZ * 4) < SimConst.TICKS_PER_FRAME:
 		_rematch_sent = true
@@ -287,7 +429,7 @@ func _process(delta: float) -> void:
 	if session.state.winner != -1 and not _rematch_sent and Input.is_action_just_pressed("swap"):
 		_rematch_sent = true
 		Net.request_rematch()
-	for p in 2:
+	for p in _views.size():
 		_views[p].board = session.state.boards[p]
 	_sfx.listen(session.state)
 	if not _pilot:
@@ -334,8 +476,8 @@ func _draw() -> void:
 			big = "GAME OVER"
 			small = "score %d" % s.boards[0].score
 		else:
-			big = "DRAW" if s.winner == 2 else ("YOU WIN" if s.winner == session.local_idx else "YOU LOSE")
-			if _pilot and s.winner != 2:
+			big = "DRAW" if s.is_draw() else ("YOU WIN" if s.won(session.local_idx) else "YOU LOSE")
+			if _pilot and not s.is_draw():
 				big = "%s WINS" % _label(s.winner).get_slice(" (", 0).to_upper()
 		small += ("   waiting for opponent…" if _rematch_sent and not _offline
 				else _retry_text())
@@ -394,7 +536,7 @@ func _hint_size() -> int:
 func _hint_rect() -> Rect2:
 	var view := get_viewport_rect().size
 	var me: Node = _views[session.local_idx]
-	if _narrow(view):
+	if _narrow(view) or session.seats() > 2:
 		var top_left: Vector2 = me.cell_to_screen(Vector2.ZERO)
 		return Rect2(top_left, me.cell_to_screen(Vector2(SimConst.W, HINT_ROWS)) - top_left)
 	var left: Node = _views[0]

@@ -61,6 +61,7 @@ const OPPONENTS := {
 }
 const LEVELS := ["easy", "normal", "hard", "max"]
 
+var name := "" # the personality, for labels; set by opponent()
 var depth: int # longest plan considered
 var samples: int # plans sampled per frame
 var step_frames: int # frames per cursor step / swap press
@@ -124,6 +125,7 @@ static func from_spec(spec: String, rng_seed: int) -> CpuPlayer:
 static func opponent(name: String, level: String, rng_seed: int) -> CpuPlayer:
 	var o: Dictionary = OPPONENTS[name]
 	var cpu := CpuPlayer.new(level, o.style, rng_seed)
+	cpu.name = name
 	for k: String in o.quirks:
 		cpu.set(k, o.quirks[k])
 	return cpu

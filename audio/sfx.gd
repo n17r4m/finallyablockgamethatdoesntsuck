@@ -56,7 +56,7 @@ func _clock(state: SimState) -> void:
 		_count = secs
 	if state.winner != _winner:
 		if _winner == -1 and state.winner != -1:
-			play("win" if state.winner == local_idx or state.solo and state.winner == 0 else "lose")
+			play("win" if state.won(local_idx) or state.solo and state.winner == 0 else "lose")
 		_winner = state.winner
 
 

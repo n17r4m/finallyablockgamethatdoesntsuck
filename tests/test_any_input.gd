@@ -42,6 +42,9 @@ func _initialize() -> void:
 	await _test_keyboard_on_a_touch_screen_finds_the_menu()
 	await _test_grab_setting()
 	await _test_pointer_in_the_real_match()
+	# The audio server lets go of a stopped sound on its own thread: give it a moment, or a
+	# cursor click from the last match is still held when we quit.
+	await create_timer(0.2).timeout
 	_failed += absi(EXPECTED_CHECKS - _ran) # a script error stops a test without failing a check
 	print("PASS" if _failed == 0 else "FAIL (%d of %d checks ran, %d failed or missing)" % [_ran, EXPECTED_CHECKS, _failed])
 	quit(0 if _failed == 0 else 1)

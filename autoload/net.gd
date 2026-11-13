@@ -20,6 +20,16 @@ var match_rules: SimRules = null
 ## What practice and CPU matches play by. null: standard.
 var practice_rules: SimRules = null
 var local_idx := 0
+## Offline formats: each seat's team, you in seat 0.
+const FORMATS := {
+	"1v1": [0, 1], "2v2": [0, 0, 1, 1], "3v3": [0, 0, 0, 1, 1, 1],
+	"3-way": [0, 1, 2], "4-way": [0, 1, 2, 3], "1v2": [0, 1, 1],
+}
+
+## Each seat's team in the match being started; empty for a 1v1.
+var match_teams := PackedInt32Array()
+## The format chosen for offline matches: each seat's team, you in seat 0. Empty for a 1v1.
+var practice_teams := PackedInt32Array()
 var cpu_name := "" # offline opponent; "" = endless solo
 var cpu_level := "normal"
 var demo := false # CPU plays your board too (attract mode / footage)
@@ -281,6 +291,7 @@ func start_practice(name := cpu_name, level := cpu_level) -> void:
 	cpu_level = level
 	match_seed = randi()
 	match_rules = practice_rules
+	match_teams = practice_teams if name != "" else PackedInt32Array()
 	local_idx = 0
 	match_started.emit()
 
@@ -313,6 +324,7 @@ func start_match() -> void:
 		return
 	match_seed = randi()
 	match_rules = null # LAN plays standard for now
+	match_teams = PackedInt32Array()
 	local_idx = 0
 	gone_why = ""
 	_start.rpc_id(remote_id, match_seed)
@@ -350,6 +362,7 @@ func _on_server_start(_match_id: int, game_seed: int, seat: int) -> void:
 	gone_why = ""
 	match_seed = game_seed
 	match_rules = _link.rules if _link else null
+	match_teams = PackedInt32Array()
 	local_idx = seat
 	match_started.emit()
 
@@ -415,6 +428,7 @@ func _start(game_seed: int) -> void:
 	gone_why = ""
 	match_seed = game_seed
 	match_rules = null
+	match_teams = PackedInt32Array()
 	local_idx = 1
 	match_started.emit()
 
