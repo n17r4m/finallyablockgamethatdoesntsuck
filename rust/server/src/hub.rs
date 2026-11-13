@@ -2,7 +2,7 @@
 //! talks to that task, so there are no locks and a match can't be seen half-updated. The admin
 //! console is one more thing that talks to it, through `AdminCmd`.
 
-use crate::protocol::{clean_name, features, ClientMsg, Decoded, EndReason, InputMsg, List, Refusal, SeatInfo, ServerMsg, Text, MAX_RULES, PROTOCOL};
+use crate::protocol::{clean_name, features, ClientMsg, Decoded, EndReason, InputMsg, List, Refusal, SeatInfo, ServerMsg, Text, Token, MAX_RULES, PROTOCOL};
 use crate::referee::{Outcome, Referee};
 use crate::store::{Loaded, Op, Seat, Store};
 use fbg_sim::consts::{BUF, RULES_VERSION, TICK_HZ, W};
@@ -29,7 +29,7 @@ const OUTGOING_QUEUE: usize = 512;
 /// The biggest a frame can be: a room with the largest ruleset there is. Inputs are far smaller.
 const MAX_FRAME: usize = MAX_RULES + 64;
 /// What this server can do beyond protocol 3's core.
-const FEATURES: u64 = features::CUSTOM_RULES;
+const FEATURES: u64 = features::CUSTOM_RULES | features::RESUME;
 
 const OUTDATED: &str = "This game is out of date. Reload the page, or update it.";
 const DRAINING: &str = "The server is restarting for an update. Try again in a minute.";
@@ -111,6 +111,7 @@ pub struct MatchInfo {
     pub frontiers: [i64; 2],
     pub late: [i64; 2], // worst input lateness, ticks
     pub over: Option<String>,
+    pub away: [bool; 2], // connection dropped; the seat is held for its token
 }
 
 /// One match's boards as the referee has them, for watching from the console.
@@ -184,6 +185,9 @@ struct Match {
     started: Instant,
     rematch: [bool; 2],
     announced: bool,
+    /// Each seat's resume token, and whether its connection has dropped, since when.
+    tokens: [Token; 2],
+    away: [Option<Instant>; 2],
 }
 
 struct Hub {
@@ -353,6 +357,13 @@ async fn run_connection(id: u64, stream: TcpStream, peer: IpAddr, trust_proxy: b
     writer.abort();
 }
 
+fn new_token() -> Token {
+    let mut t = Token::default();
+    let _ = getrandom::fill(&mut t);
+    t[0] |= 1; // never all zeros, which means none
+    t
+}
+
 fn new_seed() -> i64 {
     let mut bytes = [0u8; 4];
     // With no OS randomness the match can still be played; it just has a guessable seed.
@@ -454,7 +465,7 @@ impl Hub {
         let Some(place) = self.conns.get(&id).map(|c| &c.place) else { return };
         let playing = if let Place::Playing(m) = place { Some(*m) } else { None };
         match *msg {
-            ClientMsg::Hello { protocol, engine, tick_hz, name, platform, features } if *place == Place::New => {
+            ClientMsg::Hello { protocol, engine, tick_hz, name, platform, features, resume } if *place == Place::New => {
                 if protocol != PROTOCOL {
                     self.refuse(id, Refusal::Update, format!("This game speaks protocol {protocol}, the server {PROTOCOL}. Please update."));
                 } else if engine != RULES_VERSION as u32 || tick_hz != TICK_HZ as u32 {
@@ -465,8 +476,11 @@ impl Hub {
                         c.platform = platform.to_string();
                         c.features = features;
                     }
-                    self.set_place(id, Place::Lobby);
-                    self.send(id, &ServerMsg::Welcome { features: FEATURES });
+                    let resumed = if resume == Token::default() { 0 } else { self.resume(id, &resume) };
+                    if resumed == 0 {
+                        self.set_place(id, Place::Lobby);
+                    }
+                    self.send(id, &ServerMsg::Welcome { features: FEATURES, resumed });
                 }
             }
             ClientMsg::Ping(t) => self.send(id, &ServerMsg::Pong(t)),
@@ -579,16 +593,41 @@ impl Hub {
                 started: Instant::now(),
                 rematch: [false; 2],
                 announced: false,
+                tokens: [new_token(), new_token()],
+                away: [None; 2],
             },
         );
         println!("match {match_id} start seed={seed} {:?} vs {:?}", names[0], names[1]);
         if let Some(store) = &self.store {
             store.write(Op::Started { id: match_id, seed, seats });
         }
+        let tokens = self.matches[&match_id].tokens;
         for (seat, id) in conns.into_iter().enumerate() {
             self.set_place(id, Place::Playing(match_id));
-            self.send(id, &ServerMsg::Start { match_id, seed, seat: seat as u8, rules: rules_bytes.clone(), seats: infos });
+            self.send(id, &ServerMsg::Start { match_id, seed, seat: seat as u8, rules: rules_bytes.clone(), seats: infos, resume: tokens[seat] });
         }
+    }
+
+    /// A hello with a token: give that seat to this connection, if its match is still being
+    /// played. A connection the server still thinks holds the seat (a phone that changed
+    /// networks leaves one half-open) is let go. The match id, or 0.
+    fn resume(&mut self, id: u64, token: &Token) -> u64 {
+        let found = self.matches.iter().find_map(|(mid, m)| {
+            let seat = m.tokens.iter().position(|t| t == token)?;
+            (!m.announced).then_some((*mid, seat))
+        });
+        let Some((mid, seat)) = found else { return 0 };
+        let game = self.matches.get_mut(&mid).unwrap();
+        let old = std::mem::replace(&mut game.conns[seat], id);
+        let other = game.conns[1 - seat];
+        let was_away = game.away[seat].take().is_some();
+        if old != id {
+            self.forget(old);
+        }
+        self.set_place(id, Place::Playing(mid));
+        println!("match {mid} seat {seat} resumed{}", if was_away { "" } else { ", replacing its old connection" });
+        self.send(other, &ServerMsg::Away { seat: seat as u8, away: false });
+        mid
     }
 
     fn on_input(&mut self, mid: u64, id: u64, mut m: InputMsg) {
@@ -622,8 +661,19 @@ impl Hub {
             outcome.tick
         );
         let Outcome { winner, reason, tick } = outcome;
+        let away = game.away.map(|a| a.is_some());
         for id in conns {
             self.send(id, &ServerMsg::Result { winner: if winner == 2 { 0 } else { winner }, draw: winner == 2, reason, tick });
+        }
+        // Nobody to ask for a rematch: whoever is still here goes back to the lobby.
+        if away.contains(&true) {
+            self.matches.remove(&mid);
+            for seat in 0..2 {
+                if !away[seat] {
+                    self.send(conns[seat], &ServerMsg::Left { seat: 1 - seat as u8 });
+                    self.set_place(conns[seat], Place::Lobby);
+                }
+            }
         }
         let mut saved = None;
         if let (Some(dir), Some(replay)) = (self.config.replay_dir.clone(), replay) {
@@ -711,9 +761,27 @@ impl Hub {
                 }
                 self.rooms.retain(|_, r| r.host != id);
             }
-            Place::Playing(mid) => self.leave_match(mid, id),
+            Place::Playing(mid) => {
+                let held = conn.features & features::RESUME != 0 && self.matches.get(&mid).is_some_and(|m| !m.announced);
+                if held {
+                    self.hold_seat(mid, id);
+                } else {
+                    self.leave_match(mid, id);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// The match goes on without them for now: it waits for their inputs as it would for a
+    /// slow connection, and the referee ends it if they don't come back in time.
+    fn hold_seat(&mut self, mid: u64, id: u64) {
+        let Some(game) = self.matches.get_mut(&mid) else { return };
+        let seat = if game.conns[0] == id { 0 } else { 1 };
+        game.away[seat] = Some(Instant::now());
+        let other = game.conns[1 - seat];
+        println!("match {mid} seat {seat} dropped; holding it");
+        self.send(other, &ServerMsg::Away { seat: seat as u8, away: true });
     }
 
     fn leave_match(&mut self, mid: u64, id: u64) {
@@ -875,6 +943,7 @@ impl Hub {
                 frontiers: m.referee.frontiers(),
                 late: m.referee.latest_input,
                 over: m.referee.outcome().map(|o| describe(&o)),
+                away: m.away.map(|a| a.is_some()),
             })
             .collect();
         matches.sort_by_key(|m| m.id);

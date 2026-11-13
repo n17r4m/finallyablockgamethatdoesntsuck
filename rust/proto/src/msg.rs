@@ -20,13 +20,17 @@ pub const MAX_TEXT: usize = 200;
 pub const MAX_SEATS: usize = 64;
 /// Bigger than the largest valid ruleset (`fbg_sim::rules::MAX_BYTES`), so any ruleset fits.
 pub const MAX_RULES: usize = 1 << 17;
+/// A resume token's length. All zeros: none.
 pub const RESUME: usize = 16;
+pub type Token = [u8; RESUME];
 
 /// What a game or server can do beyond the protocol's core. Each side says what it has in its
 /// hello or welcome; neither sends the other something it didn't say it understands.
 pub mod features {
     /// Rooms played on a ruleset of the host's.
     pub const CUSTOM_RULES: u64 = 1;
+    /// Gets its seat back after a dropped connection, with the token from its start.
+    pub const RESUME: u64 = 2;
 }
 
 // Message numbers. Games send 1 to 15, the server 16 and up.
@@ -45,6 +49,7 @@ const RESULT: u64 = 21;
 const PONG: u64 = 22;
 const LEFT: u64 = 23;
 const NOTICE: u64 = 24;
+const AWAY: u64 = 25;
 
 /// Up to N items, kept in place, so reading one needs no allocation.
 #[derive(Clone, Copy)]
@@ -218,6 +223,8 @@ pub enum ClientMsg {
         name: Text<MAX_NAME>,
         platform: Text<MAX_PLATFORM>,
         features: u64,
+        /// A start's token, to take that seat back after a dropped connection. Zeros: a new arrival.
+        resume: Token,
     },
     /// Quick match. Mode 0 is standard 1v1, the only one so far.
     Queue { mode: u32 },
@@ -286,12 +293,14 @@ impl Refusal {
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ServerMsg {
-    Welcome { features: u64 },
+    /// `resumed`: the match this player is back in, from the hello's token; 0 for none.
+    Welcome { features: u64, resumed: u64 },
     /// The connection closes after this.
     Refused { code: Refusal, text: String },
     /// In the queue, or in a room waiting for someone with the same code.
     Waiting { room: Text<MAX_ROOM> },
-    Start { match_id: u64, seed: i64, seat: u8, rules: Vec<u8>, seats: List<SeatInfo, MAX_SEATS> },
+    /// `resume`: this seat's token, for a hello after a dropped connection.
+    Start { match_id: u64, seed: i64, seat: u8, rules: Vec<u8>, seats: List<SeatInfo, MAX_SEATS>, resume: Token },
     Input(InputMsg),
     /// `winner` is a seat, unless `draw`.
     Result { winner: u8, draw: bool, reason: EndReason, tick: i64 },
@@ -299,6 +308,8 @@ pub enum ServerMsg {
     /// That seat's player left after the game; this player is back in the lobby.
     Left { seat: u8 },
     Notice(String), // from whoever runs the server, for the player to read
+    /// That seat's connection dropped (`away`), or it came back. The match waits for it.
+    Away { seat: u8, away: bool },
 }
 
 /// What came off the wire.
@@ -314,6 +325,17 @@ pub enum Decoded<T> {
 pub struct Damaged;
 
 type Read<T> = Result<T, Damaged>;
+
+/// Written only when set, so a game or server without tokens sends what it always did.
+fn token(w: &mut Writer, field: u32, t: &Token) {
+    if *t != Token::default() {
+        w.bytes(field, t);
+    }
+}
+
+fn read_token(v: Value) -> Read<Token> {
+    need(v.bytes())?.try_into().map_err(|_| Damaged)
+}
 
 fn need<T>(v: Option<T>) -> Read<T> {
     v.ok_or(Damaged)
@@ -453,7 +475,7 @@ impl ClientMsg {
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         let mut w = Writer { out };
         match self {
-            ClientMsg::Hello { protocol, engine, tick_hz, name, platform, features } => {
+            ClientMsg::Hello { protocol, engine, tick_hz, name, platform, features, resume } => {
                 w.raw_varint(HELLO);
                 w.uint(1, *protocol as u64);
                 w.uint(2, *engine as u64);
@@ -461,6 +483,7 @@ impl ClientMsg {
                 w.bytes(4, name.as_bytes());
                 w.bytes(5, platform.as_bytes());
                 w.uint(6, *features);
+                token(&mut w, 7, resume);
             }
             ClientMsg::Queue { mode } => {
                 w.raw_varint(QUEUE);
@@ -505,6 +528,7 @@ impl ClientMsg {
             HELLO => {
                 let (mut protocol, mut engine, mut tick_hz, mut features) = (0, 0, 0, 0);
                 let (mut name, mut platform) = (Text::default(), Text::default());
+                let mut resume = Token::default();
                 fields(b, |field, v| {
                     match field {
                         1 => protocol = small(v, u32::MAX as u64)? as u32,
@@ -513,6 +537,7 @@ impl ClientMsg {
                         4 => name = text(v)?,
                         5 => platform = text(v)?,
                         6 => features = need(v.uint())?,
+                        7 => resume = read_token(v)?,
                         _ => {}
                     }
                     Ok(())
@@ -520,7 +545,7 @@ impl ClientMsg {
                 if !platform_ok(&platform) {
                     return Err(Damaged);
                 }
-                ClientMsg::Hello { protocol, engine, tick_hz, name, platform, features }
+                ClientMsg::Hello { protocol, engine, tick_hz, name, platform, features, resume }
             }
             QUEUE => {
                 let mut mode = 0;
@@ -586,9 +611,10 @@ impl ServerMsg {
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         let mut w = Writer { out };
         match self {
-            ServerMsg::Welcome { features } => {
+            ServerMsg::Welcome { features, resumed } => {
                 w.raw_varint(WELCOME);
                 w.uint(1, *features);
+                w.uint(2, *resumed);
             }
             ServerMsg::Refused { code, text } => {
                 w.raw_varint(REFUSED);
@@ -599,7 +625,7 @@ impl ServerMsg {
                 w.raw_varint(WAITING);
                 w.bytes(1, room.as_bytes());
             }
-            ServerMsg::Start { match_id, seed, seat, rules, seats } => {
+            ServerMsg::Start { match_id, seed, seat, rules, seats, resume } => {
                 w.raw_varint(START);
                 w.uint(1, *match_id);
                 w.fixed64(2, *seed);
@@ -612,6 +638,7 @@ impl ServerMsg {
                         w.bytes(3, s.platform.as_bytes());
                     });
                 }
+                token(&mut w, 6, resume);
             }
             ServerMsg::Input(m) => {
                 w.raw_varint(RELAY);
@@ -635,6 +662,11 @@ impl ServerMsg {
             ServerMsg::Notice(text) => {
                 w.raw_varint(NOTICE);
                 w.bytes(1, Text::<MAX_TEXT>::new(text).as_bytes());
+            }
+            ServerMsg::Away { seat, away } => {
+                w.raw_varint(AWAY);
+                w.uint(1, *seat as u64);
+                w.bool(2, *away);
             }
         }
     }
@@ -678,7 +710,18 @@ impl ServerMsg {
             Ok(x)
         };
         let msg = match kind {
-            WELCOME => ServerMsg::Welcome { features: one_uint(b)? },
+            WELCOME => {
+                let (mut features, mut resumed) = (0, 0);
+                fields(b, |field, v| {
+                    match field {
+                        1 => features = need(v.uint())?,
+                        2 => resumed = need(v.uint())?,
+                        _ => {}
+                    }
+                    Ok(())
+                })?;
+                ServerMsg::Welcome { features, resumed }
+            }
             REFUSED => {
                 let (mut code, mut text) = (Refusal::Other, String::new());
                 fields(b, |field, v| {
@@ -705,6 +748,7 @@ impl ServerMsg {
                 let (mut match_id, mut seed, mut seat) = (0, 0, 0);
                 let mut rules = Vec::new();
                 let mut seats = List::default();
+                let mut resume = Token::default();
                 fields(b, |field, v| {
                     match field {
                         1 => match_id = need(v.uint())?,
@@ -732,11 +776,12 @@ impl ServerMsg {
                                 return Err(Damaged);
                             }
                         }
+                        6 => resume = read_token(v)?,
                         _ => {}
                     }
                     Ok(())
                 })?;
-                ServerMsg::Start { match_id, seed, seat, rules, seats }
+                ServerMsg::Start { match_id, seed, seat, rules, seats, resume }
             }
             RELAY => ServerMsg::Input(read_input(b)?),
             RESULT => {
@@ -756,6 +801,18 @@ impl ServerMsg {
             PONG => ServerMsg::Pong(one_uint(b)?),
             LEFT => ServerMsg::Left { seat: u8::try_from(one_uint(b)?).map_err(|_| Damaged)? },
             NOTICE => ServerMsg::Notice(one_text(b)?),
+            AWAY => {
+                let (mut seat, mut away) = (0, false);
+                fields(b, |field, v| {
+                    match field {
+                        1 => seat = small(v, MAX_SEATS as u64 - 1)? as u8,
+                        2 => away = small(v, 1)? == 1,
+                        _ => {}
+                    }
+                    Ok(())
+                })?;
+                ServerMsg::Away { seat, away }
+            }
             other => {
                 fields(b, |_, _| Ok(()))?;
                 return Ok(Decoded::Unknown(other));

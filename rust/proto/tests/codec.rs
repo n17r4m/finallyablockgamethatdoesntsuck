@@ -18,8 +18,8 @@ fn input() -> InputMsg {
 
 fn clients() -> Vec<ClientMsg> {
     vec![
-        ClientMsg::Hello { protocol: PROTOCOL, engine: 1, tick_hz: 720, name: "Zoë 🙂".into(), platform: "web_android".into(), features: features::CUSTOM_RULES },
-        ClientMsg::Hello { protocol: 0, engine: 0, tick_hz: 0, name: "".into(), platform: "".into(), features: 0 },
+        ClientMsg::Hello { protocol: PROTOCOL, engine: 1, tick_hz: 720, name: "Zoë 🙂".into(), platform: "web_android".into(), features: features::CUSTOM_RULES, resume: [7; RESUME] },
+        ClientMsg::Hello { protocol: 0, engine: 0, tick_hz: 0, name: "".into(), platform: "".into(), features: 0, resume: Token::default() },
         ClientMsg::Queue { mode: 0 },
         ClientMsg::Queue { mode: 7 },
         ClientMsg::Room { code: "KXQT".into(), rules: vec![] },
@@ -36,19 +36,21 @@ fn servers() -> Vec<ServerMsg> {
     seats.push(SeatInfo { name: "Ann".into(), team: 0, platform: "linux".into() });
     seats.push(SeatInfo { name: "Bo".into(), team: 1, platform: "web".into() });
     vec![
-        ServerMsg::Welcome { features: 0 },
-        ServerMsg::Welcome { features: 3 },
+        ServerMsg::Welcome { features: 0, resumed: 0 },
+        ServerMsg::Welcome { features: 3, resumed: 41 },
         ServerMsg::Refused { code: Refusal::Update, text: "Please update.".into() },
         ServerMsg::Waiting { room: "".into() },
         ServerMsg::Waiting { room: "KXQT".into() },
-        ServerMsg::Start { match_id: 1, seed: -42, seat: 1, rules: vec![9; 300], seats },
-        ServerMsg::Start { match_id: 0, seed: 0, seat: 0, rules: vec![], seats: List::default() },
+        ServerMsg::Start { match_id: 1, seed: -42, seat: 1, rules: vec![9; 300], seats, resume: [255; RESUME] },
+        ServerMsg::Start { match_id: 0, seed: 0, seat: 0, rules: vec![], seats: List::default(), resume: Token::default() },
         ServerMsg::Input(input()),
         ServerMsg::Result { winner: 1, draw: false, reason: EndReason::Stalled, tick: 9000 },
         ServerMsg::Result { winner: 0, draw: true, reason: EndReason::Played, tick: 0 },
         ServerMsg::Pong(12345),
         ServerMsg::Left { seat: 1 },
         ServerMsg::Notice("The server restarts after this game.".into()),
+        ServerMsg::Away { seat: 1, away: true },
+        ServerMsg::Away { seat: 0, away: false },
     ]
 }
 
@@ -228,4 +230,22 @@ fn known_bytes() {
     // left out; change ticks -2 from the
     // frontier, then +2 -> 3, 4; masks 16, 0.
     assert_eq!(ClientMsg::Input(m).encode(), [4, 0x10, 20, 0x18, 21, 0x32, 2, 3, 4, 0x3a, 2, 16, 0]);
+}
+
+#[test]
+fn a_token_is_whole_or_damaged() {
+    let mut hello = ClientMsg::Hello { protocol: PROTOCOL, engine: 1, tick_hz: 720, name: "A".into(), platform: "x".into(), features: 0, resume: [1; RESUME] }.encode();
+    let n = hello.len();
+    // field 7, length 16, then the token: say it's 15 long and drop a byte
+    assert_eq!(hello[n - RESUME - 1], RESUME as u8);
+    hello[n - RESUME - 1] = (RESUME - 1) as u8;
+    hello.pop();
+    assert_eq!(ClientMsg::decode(&hello), Err(Damaged));
+}
+
+#[test]
+fn no_token_costs_no_bytes() {
+    let plain = ClientMsg::Hello { protocol: PROTOCOL, engine: 1, tick_hz: 720, name: "A".into(), platform: "x".into(), features: 0, resume: Token::default() };
+    let with = ClientMsg::Hello { protocol: PROTOCOL, engine: 1, tick_hz: 720, name: "A".into(), platform: "x".into(), features: 0, resume: [3; RESUME] };
+    assert_eq!(with.encode().len(), plain.encode().len() + 2 + RESUME);
 }

@@ -62,7 +62,7 @@ impl Client {
 }
 
 fn hello(name: &str) -> ClientMsg {
-    ClientMsg::Hello { protocol: PROTOCOL, engine: RULES_VERSION as u32, tick_hz: TICK_HZ as u32, name: name.into(), platform: "test".into(), features: 1 }
+    ClientMsg::Hello { protocol: PROTOCOL, engine: RULES_VERSION as u32, tick_hz: TICK_HZ as u32, name: name.into(), platform: "test".into(), features: 1, resume: Default::default() }
 }
 
 async fn start_server(config: Config) -> String {
@@ -91,7 +91,7 @@ async fn a_wrong_version_is_told_why_and_closed() {
     let url = start_server(Config::default()).await;
     for (protocol, engine, says) in [(PROTOCOL + 1, RULES_VERSION as u32, "protocol"), (PROTOCOL, RULES_VERSION as u32 + 1, "engine")] {
         let mut c = Client::connect(&url).await;
-        c.send(ClientMsg::Hello { protocol, engine, tick_hz: TICK_HZ as u32, name: "".into(), platform: "".into(), features: 0 }).await;
+        c.send(ClientMsg::Hello { protocol, engine, tick_hz: TICK_HZ as u32, name: "".into(), platform: "".into(), features: 0, resume: Default::default() }).await;
         let Some(ServerMsg::Refused { text: why, .. }) = c.recv().await else { panic!("expected a refusal") };
         assert!(why.contains(says), "{why}");
         assert_eq!(c.recv().await, None);
@@ -343,7 +343,7 @@ async fn a_game_without_custom_rules_is_told_why_it_cant_join_one() {
     host.send(ClientMsg::Room { code: "FOUR".into(), rules: rules.encode() }).await;
     assert!(matches!(host.recv().await, Some(ServerMsg::Waiting { .. })));
     let mut old = Client::connect(&url).await;
-    old.send(ClientMsg::Hello { protocol: PROTOCOL, engine: RULES_VERSION as u32, tick_hz: TICK_HZ as u32, name: "Old".into(), platform: "test".into(), features: 0 }).await;
+    old.send(ClientMsg::Hello { protocol: PROTOCOL, engine: RULES_VERSION as u32, tick_hz: TICK_HZ as u32, name: "Old".into(), platform: "test".into(), features: 0, resume: Default::default() }).await;
     assert!(matches!(old.recv().await, Some(ServerMsg::Welcome { .. })));
     old.send(ClientMsg::Room { code: "FOUR".into(), rules: vec![] }).await;
     assert!(matches!(old.recv().await, Some(ServerMsg::Notice(t)) if t.contains("custom rules")));
@@ -386,4 +386,100 @@ async fn a_protocol_2_game_is_told_to_update_in_words_it_can_read() {
     assert_eq!(frame[0], 65);
     assert_eq!(frame[1] as usize, frame.len() - 2);
     assert!(std::str::from_utf8(&frame[2..]).unwrap().contains("Reload"));
+}
+
+fn hello_resuming(name: &str, resume: fbg_server::protocol::Token) -> ClientMsg {
+    use fbg_server::protocol::features;
+    ClientMsg::Hello { protocol: PROTOCOL, engine: RULES_VERSION as u32, tick_hz: TICK_HZ as u32, name: name.into(), platform: "test".into(), features: features::CUSTOM_RULES | features::RESUME, resume }
+}
+
+/// Two players who can resume, in a match: them, the match id and seat 0's token.
+async fn resumable_pair(url: &str, code: &str) -> (Client, Client, u64, fbg_server::protocol::Token) {
+    let mut a = Client::connect(url).await;
+    a.send(hello_resuming("Ann", Default::default())).await;
+    assert!(matches!(a.recv().await, Some(ServerMsg::Welcome { resumed: 0, .. })));
+    let mut b = Client::connect(url).await;
+    b.send(hello_resuming("Bo", Default::default())).await;
+    assert!(matches!(b.recv().await, Some(ServerMsg::Welcome { resumed: 0, .. })));
+    a.send(ClientMsg::Room { code: code.into(), rules: vec![] }).await;
+    assert!(matches!(a.recv().await, Some(ServerMsg::Waiting { .. })));
+    b.send(ClientMsg::Room { code: code.into(), rules: vec![] }).await;
+    let Some(ServerMsg::Start { match_id, seat: 0, resume, .. }) = a.recv().await else { panic!("no start") };
+    let Some(ServerMsg::Start { resume: other, .. }) = b.recv().await else { panic!("no start") };
+    assert_ne!(resume, other, "each seat has its own token");
+    assert_ne!(resume, fbg_server::protocol::Token::default());
+    (a, b, match_id, resume)
+}
+
+#[tokio::test]
+async fn a_dropped_player_gets_their_seat_back_with_the_token() {
+    let url = start_server(Config::default()).await;
+    let (a, mut b, mid, token) = resumable_pair(&url, "BACK").await;
+    drop(a);
+    assert_eq!(b.recv_event().await, Some(ServerMsg::Away { seat: 0, away: true }));
+    let mut again = Client::connect(&url).await;
+    again.send(hello_resuming("Ann", token)).await;
+    assert_eq!(again.recv().await, Some(ServerMsg::Welcome { features: 3, resumed: mid }));
+    assert_eq!(b.recv_event().await, Some(ServerMsg::Away { seat: 0, away: false }));
+    // And plays on: its inputs reach the other player as seat 0's.
+    let m = InputMsg { seat: 0, frontier: 30, ack: -1, tick: 6, advantage: 0, changes: vec![(29, 16)].into(), checks: vec![].into() };
+    again.send(ClientMsg::Input(m.clone())).await;
+    assert_eq!(b.recv().await, Some(ServerMsg::Input(m)));
+}
+
+#[tokio::test]
+async fn a_token_takes_the_seat_from_a_connection_that_never_said_goodbye() {
+    // A phone that switched networks leaves its old connection open on the server.
+    let url = start_server(Config::default()).await;
+    let (mut a, mut b, mid, token) = resumable_pair(&url, "SWITCH").await;
+    let mut again = Client::connect(&url).await;
+    again.send(hello_resuming("Ann", token)).await;
+    assert_eq!(again.recv().await, Some(ServerMsg::Welcome { features: 3, resumed: mid }));
+    assert_eq!(a.recv().await, None, "the old connection is let go");
+    assert_eq!(b.recv_event().await, Some(ServerMsg::Away { seat: 0, away: false }));
+}
+
+#[tokio::test]
+async fn a_wrong_token_is_a_new_arrival() {
+    let url = start_server(Config::default()).await;
+    let (_a, _b, _, mut token) = resumable_pair(&url, "WRONG").await;
+    token[5] ^= 1;
+    let mut c = Client::connect(&url).await;
+    c.send(hello_resuming("Eve", token)).await;
+    assert!(matches!(c.recv().await, Some(ServerMsg::Welcome { resumed: 0, .. })));
+    c.send(ClientMsg::Queue { mode: 0 }).await;
+    assert!(matches!(c.recv().await, Some(ServerMsg::Waiting { .. })), "and is in the lobby");
+}
+
+#[tokio::test]
+async fn a_game_that_cant_resume_still_forfeits_on_leaving() {
+    let url = start_server(Config::default()).await;
+    let (a, mut b, _) = pair(&url, "OLDWAY").await;
+    drop(a);
+    assert!(matches!(b.recv_event().await, Some(ServerMsg::Result { winner: 1, reason: EndReason::Left, .. })));
+}
+
+#[tokio::test]
+async fn a_player_who_never_comes_back_loses_and_the_other_is_free_to_go() {
+    let url = start_server(Config::default()).await;
+    let (a, mut b, _, _) = resumable_pair(&url, "GONE").await;
+    drop(a);
+    assert_eq!(b.recv_event().await, Some(ServerMsg::Away { seat: 0, away: true }));
+    let m = InputMsg { seat: 1, frontier: 60, ack: -1, tick: 60, advantage: 0, changes: vec![].into(), checks: vec![].into() };
+    b.send(ClientMsg::Input(m)).await;
+    // The referee's stall limit is 10 s; it ends the match against whoever is holding it up.
+    let ended = loop {
+        match timeout(Duration::from_secs(15), b.0.next()).await.expect("no ending").and_then(|r| r.ok()) {
+            Some(Message::Binary(bytes)) => match ServerMsg::read(&bytes) {
+                Some(ServerMsg::Input(_)) => continue,
+                other => break other,
+            },
+            Some(_) => continue,
+            None => break None,
+        }
+    };
+    assert!(matches!(ended, Some(ServerMsg::Result { winner: 1, reason: EndReason::Stalled, .. })), "{ended:?}");
+    assert_eq!(b.recv().await, Some(ServerMsg::Left { seat: 0 }));
+    b.send(ClientMsg::Queue { mode: 0 }).await;
+    assert!(matches!(b.recv().await, Some(ServerMsg::Waiting { .. })));
 }

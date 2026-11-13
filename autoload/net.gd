@@ -39,6 +39,16 @@ var _ping_t := 0.0
 var _self_ready := false # rematch handshake (host side)
 var _peer_ready := false
 var _link: ServerLink # set while using the match server
+var _url := ""
+var _in_match := false # through the server, started and not yet ended
+# Getting a seat back after a dropped connection (see _on_link_closed).
+const RESUME_MS := 15000 # the server's referee gives up on a player after 10 s
+const RESUME_RETRY_MS := 1000
+var _resume_token := PackedByteArray() # set while trying
+var _resume_match := 0
+var _resume_since_msec := 0
+var _resume_next_msec := 0
+var _resume_link: ServerLink
 
 
 func _ready() -> void:
@@ -142,7 +152,8 @@ func connect_server(url: String, room_code := "", room_rules: SimRules = null) -
 		status.emit("Can't reach the server (%s)" % error_string(err))
 		return err
 	_link = link
-	link.welcomed.connect(func() -> void:
+	_url = url
+	link.welcomed.connect(func(_resumed: int) -> void:
 		if room_code == "":
 			link.queue()
 		else:
@@ -157,25 +168,99 @@ func connect_server(url: String, room_code := "", room_rules: SimRules = null) -
 			var link_text := invite_link(room_code)
 			status.emit("Room %s: waiting for your friend.%s" % [room_code,
 					"\nInvite link (copied if you made the room): " + link_text if link_text != "" else ""]))
+	_wire_match(link)
+	status.emit("Connecting to the server…")
+	return OK
+
+
+## What a link does once it's in a match, the first time or after getting back in.
+func _wire_match(link: ServerLink) -> void:
 	link.started.connect(_on_server_start)
 	link.input.connect(func(pkt: Dictionary) -> void: packet.emit(pkt))
 	link.finished.connect(_on_server_result)
 	link.pong.connect(_on_rtt_sample)
 	link.opponent_left.connect(func() -> void:
+		_in_match = false
 		status.emit("Opponent left")
 		opponent_left.emit())
-	link.notice.connect(func(text: String) -> void:
-		status.emit(text)
-		notice.emit(text))
-	link.closed.connect(_on_server_disconnected)
-	status.emit("Connecting to the server…")
-	return OK
+	link.opponent_away.connect(func(away: bool) -> void:
+		_say("Opponent's connection dropped: waiting for them…" if away else "Opponent is back"))
+	link.notice.connect(_say)
+	link.closed.connect(_on_link_closed.bind(link))
+
+
+func _say(text: String) -> void:
+	status.emit(text)
+	notice.emit(text)
+
+
+## A dropped connection in the middle of a match isn't the end of it: the server holds the seat
+## for a while, and a new connection with the start's token takes it back. The match keeps
+## running meanwhile, and the session resends whatever the other side hasn't acknowledged.
+func _on_link_closed(link: ServerLink) -> void:
+	if link != _link:
+		return
+	if _in_match and not link.resume_token.is_empty():
+		_link = null
+		_resume_token = link.resume_token
+		_resume_match = link.match_id
+		_resume_since_msec = Time.get_ticks_msec()
+		_resume_next_msec = 0
+		_say("Connection lost: reconnecting…")
+	else:
+		_on_server_disconnected()
+
+
+func _try_resume() -> void:
+	if Time.get_ticks_msec() - _resume_since_msec > RESUME_MS:
+		_give_up_resuming("Couldn't reconnect")
+		return
+	_resume_next_msec = Time.get_ticks_msec() + RESUME_RETRY_MS
+	var link := ServerLink.new()
+	link.player_name = str(Config.get_value("player", "name"))
+	if link.open(_url, _resume_token) != OK:
+		return
+	_resume_link = link
+	link.welcomed.connect(func(resumed: int) -> void:
+		if link != _resume_link:
+			return
+		_resume_link = null
+		if resumed == 0 or resumed != _resume_match:
+			link.close()
+			_give_up_resuming("The match ended while you were away")
+			return
+		# Keep the token: the same seat can drop and come back again.
+		link.match_id = _resume_match
+		link.resume_token = _resume_token
+		_resume_token = PackedByteArray()
+		_link = link
+		_wire_match(link)
+		_say("Reconnected"))
+	link.refused.connect(func(why: String) -> void:
+		if link == _resume_link:
+			_resume_link = null
+			_give_up_resuming(why))
+	link.closed.connect(func() -> void:
+		if link == _resume_link:
+			_resume_link = null) # tried again from _process
+
+
+func _give_up_resuming(why: String) -> void:
+	leave()
+	gone_why = why
+	status.emit(why)
+	opponent_left.emit()
 
 
 func leave() -> void:
 	if _link:
 		_link.close()
 		_link = null
+	if _resume_link:
+		_resume_link.close()
+		_resume_link = null
+	_resume_token = PackedByteArray()
+	_in_match = false
 	var peer := multiplayer.multiplayer_peer
 	if peer and not peer is OfflineMultiplayerPeer:
 		peer.close()
@@ -238,7 +323,7 @@ func start_match() -> void:
 func send(pkt: Dictionary) -> void:
 	if _link:
 		_link.send_input(pkt)
-	elif remote_id != 0:
+	elif remote_id > 0: # not SERVER_OPPONENT: between connections, the session resends later
 		_rx.rpc_id(remote_id, pkt)
 
 
@@ -246,6 +331,10 @@ func _process(delta: float) -> void:
 	_ping_t += delta
 	if _link:
 		_link.poll()
+	if _resume_link:
+		_resume_link.poll()
+	elif not _resume_token.is_empty() and Time.get_ticks_msec() >= _resume_next_msec:
+		_try_resume()
 	if remote_id != 0 and _ping_t >= 0.25:
 		_ping_t = 0.0
 		if _link:
@@ -256,6 +345,7 @@ func _process(delta: float) -> void:
 
 func _on_server_start(_match_id: int, game_seed: int, seat: int) -> void:
 	remote_id = SERVER_OPPONENT
+	_in_match = true
 	opponent_name = _link.opponent_name if _link else ""
 	gone_why = ""
 	match_seed = game_seed
@@ -267,6 +357,7 @@ func _on_server_start(_match_id: int, game_seed: int, seat: int) -> void:
 ## A game played to its end needs no announcing: both boards already show it. Any other
 ## ending comes from the server, and the session would otherwise just stall.
 func _on_server_result(winner: int, reason: int, _tick: int) -> void:
+	_in_match = false
 	if reason == ServerLink.PLAYED:
 		return
 	var i_won := winner == local_idx

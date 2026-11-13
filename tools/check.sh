@@ -86,6 +86,7 @@ if command -v cargo > /dev/null; then
 		rm -f "$log"
 		run test_server --url=ws://127.0.0.1:47199 --seconds=20
 		run test_server --url=ws://127.0.0.1:47199 --seconds=10 --custom
+		run test_server --url=ws://127.0.0.1:47199 --seconds=12 --drop
 		[ $full -eq 1 ] && run test_server --url=ws://127.0.0.1:47199 --seconds=60 --bad-link
 		kill "$server" 2> /dev/null
 		wait "$server" 2> /dev/null

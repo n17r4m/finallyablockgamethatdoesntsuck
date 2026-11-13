@@ -5,6 +5,8 @@ extends SceneTree
 ## --bad-link delays what each side receives by 30-90 ms, in order, and adds a stall of 200 ms
 ## twice a second, about what lost packets do to a TCP connection on a poor route.
 ## --custom plays a room on custom rules from its host: six colours and quicker everything.
+## --drop plays player 0 through Net, as the game does, and cuts its connection halfway: it
+## must get its seat back and play the match out with no desync.
 
 const TPF := SimConst.TICKS_PER_FRAME
 
@@ -26,6 +28,11 @@ var _began := 0
 var _phase := "waiting"
 var _settle := 0
 var _failed := 0
+var _drop := false
+var _net: Node
+var _dropped := false
+var _said: Array[String] = [] # Net's notices, in drop mode
+var _away: Array = [] # what link 1 heard about player 0's connection
 
 
 func _init() -> void:
@@ -36,6 +43,8 @@ func _init() -> void:
 			_seconds = a.trim_prefix("--seconds=").to_int()
 		elif a == "--bad-link":
 			_bad_link = true
+		elif a == "--drop":
+			_drop = true
 		elif a == "--custom":
 			_custom = SimRules.standard()
 			_custom.colors = 6
@@ -43,8 +52,21 @@ func _init() -> void:
 			_custom.flash = 300
 			_custom.rise = SimRules.Line.new(SimRules.LINEAR, true, [[0, 2], [7200, 4]])
 	_test_codec()
+	_setup.call_deferred() # the autoloads, Net among them, join the tree after _init
+
+
+func _setup() -> void:
 	var code := "T%d" % (randi() % 1000000)
-	for c in 2:
+	if _drop:
+		_net = root.get_node("Net")
+		_links.append(null) # player 0 is Net's
+		for c: Dictionary in _net.match_started.get_connections():
+			_net.match_started.disconnect(c.callable) # no match scene: this test is the game
+		_net.notice.connect(func(t: String) -> void: _said.append(t))
+		_net.match_started.connect(func() -> void:
+			_on_started(0, _net.match_seed, _net.local_idx, 0))
+		_net.packet.connect(_on_input.bind(0))
+	for c in range(1 if _drop else 0, 2):
 		var link := ServerLink.new()
 		link.player_name = "Tester %d" % c
 		if link.open(_url) != OK:
@@ -56,7 +78,10 @@ func _init() -> void:
 		link.started.connect(_on_started.bind(c))
 		link.finished.connect(func(w: int, r: int, t: int) -> void: _results.append([w, r, t]))
 		link.input.connect(_on_input.bind(c))
+		link.opponent_away.connect(func(away: bool) -> void: _away.append(away))
 		_links.append(link)
+	if _drop:
+		_net.connect_server(_url, code)
 	_began = Time.get_ticks_msec()
 
 
@@ -67,26 +92,29 @@ func _fail(what: String) -> void:
 
 func _finish() -> void:
 	for link in _links:
-		link.close()
+		if link:
+			link.close()
+	if _net:
+		_net.leave()
 	print("PASS" if _failed == 0 else "FAIL (%d)" % _failed)
 	quit(0 if _failed == 0 else 1)
 
 
-func _on_welcomed(c: int, code: String) -> void:
+func _on_welcomed(_resumed: int, c: int, code: String) -> void:
 	# Whoever gets there first hosts, and the host's rules are the room's: a joiner's are ignored.
 	_links[c].room(code, _custom)
 
 
 ## Everything here is indexed by link. Which seat a link gets is up to the server.
 func _on_started(_id: int, game_seed: int, seat: int, c: int) -> void:
-	var got := _links[c].rules
+	var got: SimRules = _net.match_rules if _drop and c == 0 else _links[c].rules
 	if (got == null) != (_custom == null) or (got and got.encode() != _custom.encode()):
 		_fail("link %d started on the wrong rules" % c)
 	var s := RollbackSession.new(game_seed, seat, 2 * TPF, false, false, "auto" if seat == 0 else "gdscript", got)
 	_sessions[c] = s
 	_cpus[c] = CpuPlayer.opponent("Overmind", "hard", game_seed + seat)
 	s.desynced.connect(func(_t: int) -> void: _desyncs += 1)
-	s.outgoing.connect(_links[c].send_input)
+	s.outgoing.connect(_net.send if _drop and c == 0 else _links[c].send_input)
 	_last_usec = Time.get_ticks_usec()
 
 
@@ -95,8 +123,11 @@ func _on_input(pkt: Dictionary, c: int) -> void:
 
 
 func _process(_delta: float) -> bool:
+	if _began == 0:
+		return false
 	for link in _links:
-		link.poll()
+		if link:
+			link.poll()
 	if _sessions[0] == null or _sessions[1] == null:
 		if Time.get_ticks_msec() - _began > 5000:
 			_fail("no match within 5 s: is fbg-server running at %s?" % _url)
@@ -113,6 +144,9 @@ func _process(_delta: float) -> bool:
 		if s.input_open():
 			s.set_local_input(_cpus[c].next_input(s.state.boards[s.local_idx]))
 		s.advance(due)
+	if _drop and not _dropped and Time.get_ticks_msec() - _began > _seconds * 500:
+		_dropped = true
+		_net._link._ws.close() # as if the phone lost its network
 	if Time.get_ticks_msec() - _began > _seconds * 1000:
 		_check()
 		_finish()
@@ -132,7 +166,17 @@ func _deliver(c: int) -> void:
 func _check() -> void:
 	var a := _sessions[0]
 	var b := _sessions[1]
+	if _drop:
+		_links[0] = _net._link
+		if _links[0] == null:
+			_fail("Net didn't get back on the server: it said %s" % [_said])
+			return
+		if not "Reconnected" in _said or _away != [true, false]:
+			_fail("the drop wasn't seen through: Net said %s, the other player heard %s" % [_said, _away])
+		print("  ok   dropped and got back in: %s" % [_said])
 	for c in 2:
+		if _drop:
+			break # Net's player goes by the settings' name
 		if _links[c].opponent_name != "Tester %d" % (1 - c):
 			_fail("link %d was told its opponent is %s" % [c, _links[c].opponent_name])
 	if (a.state is RustState) == (b.state is RustState):

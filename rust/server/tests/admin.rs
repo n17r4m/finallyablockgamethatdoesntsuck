@@ -25,7 +25,7 @@ struct Client(WebSocketStream<MaybeTlsStream<TcpStream>>);
 impl Client {
     async fn hello(url: &str, name: &str) -> Client {
         let mut c = Client(connect_async(url).await.unwrap().0);
-        c.send(ClientMsg::Hello { protocol: PROTOCOL, engine: RULES_VERSION as u32, tick_hz: TICK_HZ as u32, name: name.into(), platform: "test".into(), features: 1 }).await;
+        c.send(ClientMsg::Hello { protocol: PROTOCOL, engine: RULES_VERSION as u32, tick_hz: TICK_HZ as u32, name: name.into(), platform: "test".into(), features: 1, resume: Default::default() }).await;
         assert!(matches!(c.recv().await, Some(ServerMsg::Welcome { .. })));
         c
     }

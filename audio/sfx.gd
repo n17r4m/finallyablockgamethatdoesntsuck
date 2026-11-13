@@ -27,6 +27,13 @@ func _ready() -> void:
 		_voices.append(p)
 
 
+## A sound still playing as the game quits would outlive the audio server.
+func _exit_tree() -> void:
+	for v in _voices:
+		v.stop()
+		v.stream = null
+
+
 ## Call once a frame with the state being shown.
 func listen(state: SimState) -> void:
 	while _ears.size() < state.boards.size():

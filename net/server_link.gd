@@ -5,7 +5,7 @@ extends RefCounted
 ## Input messages are the Dictionaries RollbackSession already speaks, so the session doesn't
 ## know a server exists. Call poll() every frame.
 
-signal welcomed
+signal welcomed(resumed: int) # the match this connection is back in, from its token; 0: none
 signal refused(why: String)
 signal waiting
 signal started(match_id: int, game_seed: int, seat: int)
@@ -13,6 +13,7 @@ signal input(pkt: Dictionary)
 signal finished(winner: int, reason: int, tick: int) # winner -1: a draw
 signal pong(sent_usec: int)
 signal opponent_left
+signal opponent_away(away: bool) # their connection dropped and the match waits, or they're back
 signal notice(text: String) # from whoever runs the server
 signal closed
 
@@ -26,10 +27,14 @@ var player_name := "Player"
 var opponent_name := ""
 var seats: Array = []
 var rules: SimRules = null
+## From the latest start: the match, and this seat's token for getting it back after a drop.
+var match_id := 0
+var resume_token := PackedByteArray()
 
 var _ws := WebSocketPeer.new()
 var _wire: Object
 var _hello_sent := false
+var _resume := PackedByteArray()
 var _closed := false
 
 
@@ -43,9 +48,11 @@ func _init() -> void:
 		_wire = ClassDB.instantiate(WIRE)
 
 
-func open(url: String) -> Error:
+## resume: a token from an earlier start, to take that seat back.
+func open(url: String, resume := PackedByteArray()) -> Error:
 	if _wire == null:
 		return ERR_UNAVAILABLE
+	_resume = resume
 	_ws.inbound_buffer_size = 1 << 20
 	_ws.outbound_buffer_size = 1 << 20
 	return _ws.connect_to_url(url)
@@ -54,6 +61,14 @@ func open(url: String) -> Error:
 func close() -> void:
 	_ws.close()
 	_closed = true
+	_let_go()
+
+
+## Listeners are often lambdas holding this link, a cycle that would keep it forever.
+func _let_go() -> void:
+	for sig in get_signal_list():
+		for c: Dictionary in get_signal_connection_list(sig.name):
+			disconnect(sig.name, c.callable)
 
 
 ## Quick match. Mode 0 is standard 1v1.
@@ -88,12 +103,13 @@ func poll() -> void:
 		WebSocketPeer.STATE_OPEN:
 			if not _hello_sent:
 				_hello_sent = true
-				_send(_wire.hello(player_name, platform()))
+				_send(_wire.hello(player_name, platform(), _resume))
 			while _ws.get_available_packet_count() > 0 and not _closed:
 				decode(_ws.get_packet())
 		WebSocketPeer.STATE_CLOSED:
 			_closed = true
 			closed.emit()
+			_let_go()
 
 
 ## What the server's console shows this game running on.
@@ -116,7 +132,7 @@ func decode(bytes: PackedByteArray) -> void:
 	var m: Dictionary = _wire.decode(bytes)
 	match m.get("type", ""):
 		"welcome":
-			welcomed.emit()
+			welcomed.emit(m.resumed)
 		"refused":
 			refused.emit(m.text)
 		"waiting":
@@ -131,6 +147,8 @@ func decode(bytes: PackedByteArray) -> void:
 					close()
 					return
 			rules = r
+			match_id = m.match_id
+			resume_token = m.resume
 			seats = m.seats
 			var seat: int = m.seat
 			opponent_name = ""
@@ -149,3 +167,5 @@ func decode(bytes: PackedByteArray) -> void:
 			opponent_left.emit()
 		"notice":
 			notice.emit(m.text)
+		"away":
+			opponent_away.emit(m.away)

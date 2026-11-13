@@ -257,7 +257,7 @@ async function refresh() {
     const behind = ms(m.clock - m.refereed);
     const gap = ms(Math.abs(m.frontiers[0] - m.frontiers[1]));
     return `<tr><td>${m.id}</td>
-      <td>${esc(m.names[0])} <span class="dim">vs</span> ${esc(m.names[1])}</td>
+      <td>${esc(m.names[0])}${m.away?.[0] ? ` <span class="warn">(away)</span>` : ""} <span class="dim">vs</span> ${esc(m.names[1])}${m.away?.[1] ? ` <span class="warn">(away)</span>` : ""}</td>
       <td>${rtt(byId[m.conns[0]]?.rtt_ms)} / ${rtt(byId[m.conns[1]]?.rtt_ms)}</td>
       <td>${ago(m.age_s)}</td>
       <td class="num ${behind > 1000 ? "warn" : ""}">${behind} ms</td>

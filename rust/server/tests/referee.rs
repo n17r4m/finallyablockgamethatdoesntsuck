@@ -258,7 +258,7 @@ fn hostile_bytes_never_reach_the_referee_as_anything_it_cant_take() {
 #[test]
 fn text_is_cut_on_a_character_boundary_and_names_are_cleaned() {
     let long = "é".repeat(40); // 80 bytes
-    let bytes = ClientMsg::Hello { protocol: 3, engine: 1, tick_hz: 720, name: long.as_str().into(), platform: "linux".into(), features: 0 }.encode();
+    let bytes = ClientMsg::Hello { protocol: 3, engine: 1, tick_hz: 720, name: long.as_str().into(), platform: "linux".into(), features: 0, resume: Default::default() }.encode();
     let Some(ClientMsg::Hello { name, .. }) = ClientMsg::read(&bytes) else { panic!("didn't decode") };
     assert_eq!(name.as_str(), "é".repeat(12));
     assert_eq!(fbg_server::protocol::clean_name("  \u{7}Zed\n "), "Zed");

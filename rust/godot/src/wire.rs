@@ -3,7 +3,7 @@
 //! Input Dictionaries are the ones RollbackSession already speaks:
 //! {f, a, s, v, t: PackedInt64Array, m: PackedInt32Array, c: {tick: hash}}.
 
-use fbg_proto::{features, ClientMsg, Decoded, EndReason, InputMsg, List, Refusal, SeatInfo, ServerMsg, Text, MAX_SEATS, PROTOCOL};
+use fbg_proto::{features, ClientMsg, Decoded, EndReason, InputMsg, List, Refusal, SeatInfo, ServerMsg, Text, Token, MAX_SEATS, PROTOCOL};
 use godot::prelude::*;
 
 // The two versions of the bindings in use (see Cargo.toml) spell dictionary access differently.
@@ -31,6 +31,15 @@ fn string(d: &VarDictionary, k: &str) -> String {
 
 fn bytes(d: &VarDictionary, k: &str) -> Vec<u8> {
     get(d, k).and_then(|v| v.try_to::<PackedByteArray>().ok()).map(|b| b.as_slice().to_vec()).unwrap_or_default()
+}
+
+/// Anything but a whole token is no token.
+fn token(b: &[u8]) -> Token {
+    b.try_into().unwrap_or_default()
+}
+
+fn token_pba(t: &Token) -> PackedByteArray {
+    if *t == Token::default() { PackedByteArray::new() } else { pba(t) }
 }
 
 fn pba(b: &[u8]) -> PackedByteArray {
@@ -94,18 +103,20 @@ impl FbgWire {
     /// What this game can do beyond the protocol's core.
     #[func]
     fn features() -> i64 {
-        features::CUSTOM_RULES as i64
+        (features::CUSTOM_RULES | features::RESUME) as i64
     }
 
+    /// resume: a start's token to take that seat back, or empty.
     #[func]
-    fn hello(name: GString, platform: GString) -> PackedByteArray {
+    fn hello(name: GString, platform: GString, resume: PackedByteArray) -> PackedByteArray {
         let m = ClientMsg::Hello {
             protocol: PROTOCOL,
             engine: u32::from(fbg_sim::consts::RULES_VERSION),
             tick_hz: u32::from(fbg_sim::consts::TICK_HZ),
             name: Text::new(&name.to_string()),
             platform: Text::new(&platform.to_string()),
-            features: features::CUSTOM_RULES,
+            features: features::CUSTOM_RULES | features::RESUME,
+            resume: token(resume.as_slice()),
         };
         pba(&m.encode())
     }
@@ -150,8 +161,9 @@ impl FbgWire {
             Err(_) => return d,
         };
         let kind = match msg {
-            ServerMsg::Welcome { features } => {
+            ServerMsg::Welcome { features, resumed } => {
                 put(&mut d, "features", (features as i64).to_variant());
+                put(&mut d, "resumed", (resumed as i64).to_variant());
                 "welcome"
             }
             ServerMsg::Refused { code, text } => {
@@ -163,7 +175,8 @@ impl FbgWire {
                 put(&mut d, "room", room.to_string().to_variant());
                 "waiting"
             }
-            ServerMsg::Start { match_id, seed, seat, rules, seats } => {
+            ServerMsg::Start { match_id, seed, seat, rules, seats, resume } => {
+                put(&mut d, "resume", token_pba(&resume).to_variant());
                 put(&mut d, "match_id", (match_id as i64).to_variant());
                 put(&mut d, "seed", seed.to_variant());
                 put(&mut d, "seat", i64::from(seat).to_variant());
@@ -202,6 +215,11 @@ impl FbgWire {
                 put(&mut d, "text", text.to_variant());
                 "notice"
             }
+            ServerMsg::Away { seat, away } => {
+                put(&mut d, "seat", i64::from(seat).to_variant());
+                put(&mut d, "away", away.to_variant());
+                "away"
+            }
         };
         put(&mut d, "type", kind.to_variant());
         d
@@ -212,7 +230,7 @@ impl FbgWire {
     #[func]
     fn server_bytes(d: VarDictionary) -> PackedByteArray {
         let msg = match string(&d, "type").as_str() {
-            "welcome" => ServerMsg::Welcome { features: int(&d, "features") as u64 },
+            "welcome" => ServerMsg::Welcome { features: int(&d, "features") as u64, resumed: int(&d, "resumed") as u64 },
             "refused" => ServerMsg::Refused { code: refusal(int(&d, "code")), text: string(&d, "text") },
             "waiting" => ServerMsg::Waiting { room: Text::new(&string(&d, "room")) },
             "start" => {
@@ -224,7 +242,7 @@ impl FbgWire {
                         }
                     }
                 }
-                ServerMsg::Start { match_id: int(&d, "match_id") as u64, seed: int(&d, "seed"), seat: int(&d, "seat") as u8, rules: bytes(&d, "rules"), seats }
+                ServerMsg::Start { match_id: int(&d, "match_id") as u64, seed: int(&d, "seed"), seat: int(&d, "seat") as u8, rules: bytes(&d, "rules"), seats, resume: token(&bytes(&d, "resume")) }
             }
             "input" => ServerMsg::Input(input_from(&d)),
             "result" => ServerMsg::Result {
@@ -236,6 +254,7 @@ impl FbgWire {
             "pong" => ServerMsg::Pong(int(&d, "t") as u64),
             "left" => ServerMsg::Left { seat: int(&d, "seat") as u8 },
             "notice" => ServerMsg::Notice(string(&d, "text")),
+            "away" => ServerMsg::Away { seat: int(&d, "seat") as u8, away: get(&d, "away").and_then(|v| v.try_to::<bool>().ok()).unwrap_or(false) },
             _ => return PackedByteArray::new(),
         };
         pba(&msg.encode())

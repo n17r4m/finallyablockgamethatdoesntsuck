@@ -35,7 +35,7 @@ exists: `net/server_link.gd` turns its packets to and from these bytes.
 | Reason | What happened | Result |
 |---|---|---|
 | Played | The rules ended the game | Whoever the referee says won |
-| Left | A player's connection closed, or it flooded the server | The other player wins |
+| Left | A player's connection closed (a game without resume, or after the game), or it flooded the server | The other player wins |
 | Stalled | A player's inputs stopped for 10 s while it held the match up | The other player wins |
 | Wrong state | A player's hash differs from the referee's | The other player wins, or a draw if both differ |
 | Bad input | An impossible message: bits outside the input mask, a change past its own frontier, a frontier over 2 s past the server's clock, or a hash that can't exist | The other player wins |
@@ -46,6 +46,14 @@ A match that falls behind the server's clock is not stalled. Clients drop ticks 
 and never bank them, so an honest match can run late for good. Only a frontier that has stopped
 moving counts, and the blame goes to whichever player is further behind, because the other one
 runs out of room to predict shortly after and stops through no fault of its own.
+
+**A dropped connection** from a game that can resume doesn't end the match. The server holds
+the seat, tells the other player (Away), and the match waits as it would for a slow
+connection. A new connection whose hello carries the seat's token from the start takes the seat
+back. If the old connection is still open on the server (a phone that changed networks leaves
+one behind), the server closes it. The match then carries on: each side's session resends what
+the other hasn't acknowledged. A player who doesn't return within the stall limit loses as
+Stalled, and the other player goes back to the lobby.
 
 ## Messages
 
@@ -74,7 +82,7 @@ Types: **uint** varint; **sint** zigzag varint; **fixed64** 8 bytes, for seeds a
 
 | # | Message | Fields |
 |---|---|---|
-| 1 | Hello | protocol [1], engine [2] (`RULES_VERSION`), tick rate [3], name [4] (text, up to 24 bytes), platform [5] (up to 16 bytes of letters, digits, `.` and `_`), features [6] |
+| 1 | Hello | protocol [1], engine [2] (`RULES_VERSION`), tick rate [3], name [4] (text, up to 24 bytes), platform [5] (up to 16 bytes of letters, digits, `.` and `_`), features [6], resume [7] (a start's 16-byte token, to take that seat back) |
 | 2 | Quick match | mode [1]: 0 is standard 1v1, the only one so far |
 | 3 | Room | code [1] (1-16 ASCII letters and digits, case ignored), rules [2] (a ruleset's bytes; empty for standard) |
 | 4 | Input | see below |
@@ -85,17 +93,18 @@ Types: **uint** varint; **sint** zigzag varint; **fixed64** 8 bytes, for seeds a
 
 | # | Message | Fields |
 |---|---|---|
-| 16 | Welcome | features [1] |
+| 16 | Welcome | features [1], resumed [2]: the match the hello's token got this player back into, or 0 |
 | 17 | Refused | code [1]: 0 other, 1 update, 2 draining, 3 banned, 4 full, 5 bad rules; text [2]. The connection then closes |
 | 18 | Waiting | room [1], empty in the queue |
-| 19 | Start | match id [1], seed [2] fixed64, your seat [3], rules [4] (empty: standard), seats [5], repeated: each a message of name [1], team [2], platform [3] |
+| 19 | Start | match id [1], seed [2] fixed64, your seat [3], rules [4] (empty: standard), seats [5], repeated: each a message of name [1], team [2], platform [3]; resume [6], this seat's 16-byte token |
 | 20 | Input | the same as the game's, with seat [1] saying whose |
 | 21 | Result | winner [1] (a seat), reason [2] (the table above, in order), tick [3] sint, draw [4] |
 | 22 | Pong | time [1], from the ping |
 | 23 | Left | seat [1]: that player left after the game, and this one is back in the lobby |
 | 24 | Notice | text [1], up to 200 bytes: from whoever runs the server, to show the player |
+| 25 | Away | seat [1], away [2]: that seat's connection dropped and the match is waiting (true), or it's back (false) |
 
-**Features**: bit 0, custom rules. A room's first player hosts it, and the host's rules are the
+**Features**: bit 0, custom rules; bit 1, resume (see above). A room's first player hosts it, and the host's rules are the
 match's; the server checks them with the same code the sims run (`Rules::decode`) and turns away
 anything that isn't a playable ruleset. A game that didn't say it can play custom rules is told
 it can't join such a room, and stays in the lobby. Rematches keep the rules.
