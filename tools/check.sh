@@ -105,10 +105,14 @@ if command -v cargo > /dev/null; then
 		run test_rust_bridge
 		run test_backends
 		run test_rules_play
-		# The network failures again, with Rust on both sides and a Rust player against GDScript.
+		# The network failures for a 2v2 through a relay, on Rust: four boards on four clients.
+		run test_net_matrix --seeds=1 --seats=4 --backends=rust
+		# Again with Rust on both sides and a Rust player against GDScript, and other tables.
 		if [ $full -eq 1 ]; then
 			run test_net_matrix --seeds=4 --backends=rust
 			run test_net_matrix --seeds=4 --backends=mixed
+			run test_net_matrix --seeds=2 --seats=3 --teams=ffa --backends=mixed
+			run test_net_matrix --seeds=1 --seats=6 --backends=rust
 		fi
 	else
 		echo "FAIL Rust extension build"

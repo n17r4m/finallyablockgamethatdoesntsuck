@@ -1,8 +1,10 @@
 extends SceneTree
 ## Rollback sessions under realistic network failures, driven the way scenes/match.gd
 ## drives them: wall-clock ticks, capped catch-up, and no banking of ticks lost to a stall.
-##   godot --headless --path . -s tests/test_net_matrix.gd [-- --seeds=4 --cpu=0 --backends=gdscript]
-## --backends picks the rules each side runs: gdscript, rust, or mixed (one of each).
+##   godot --headless --path . -s tests/test_net_matrix.gd [-- --seeds=4 --cpu=0 --backends=gdscript --seats=2]
+## --backends picks the rules each side runs: gdscript, rust, or mixed (alternating).
+## --seats plays that many clients through a relay, as the server does: two teams, or a
+## free-for-all with --teams=ffa. Every packet then carries its sender's seat.
 ##
 ## Every run must never desync and must converge to the exact state an offline replay of
 ## the agreed inputs produces. Profiles also check fairness: once settled, neither side may
@@ -15,10 +17,15 @@ const MS_PER_TICK := 1000.0 / SimConst.TICK_HZ
 # Rollback milliseconds per second may differ by this factor once settled...
 const FAIR_RATIO := 1.6
 # ...unless both are below this: about 10 input changes a second, each rolled back one
-# 16.7 ms frame. Rollback comes in whole frames, so nothing finer can be told apart.
+# 16.7 ms frame, from each other seat. Rollback comes in whole frames, so nothing finer can be
+# told apart.
 const FAIR_FLOOR := 170.0
+# With more seats, one slow route among fast ones can't be evened out by one clock offset per
+# player: rollback comes in whole frames from several peers at once (see RollbackSession).
+const FAIR_RATIO_ONE_SLOW_ROUTE := 2.5
 
-# ab / ba: one-way latency in frames towards client b / client a.
+# ab / ba: one-way latency in frames towards client b / client a. With more seats, ba is towards
+# client 0 and ab towards everyone else.
 const PROFILES := {
 	"lan": {"ab": [1, 1], "ba": [1, 1], "loss": 0.0},
 	"broadband": {"ab": [2, 3], "ba": [2, 3], "loss": 0.005},
@@ -36,11 +43,26 @@ const PROFILES := {
 
 var _failed := 0
 var _rules: Array = ["gdscript", "gdscript"]
+var _teams := PackedInt32Array([0, 1])
 
 
 func _init() -> void:
 	var seeds := 4
 	var cpu_seeds := 0
+	var seats := 2
+	var ffa := false
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--seats="):
+			seats = a.trim_prefix("--seats=").to_int()
+		elif a == "--teams=ffa":
+			ffa = true
+	_teams = PackedInt32Array()
+	for c in seats:
+		_teams.append(c if ffa else c * 2 / seats)
+	if SimState.teams_error(_teams) != "":
+		print("FAIL %s: %s" % [_teams, SimState.teams_error(_teams)])
+		quit(1)
+		return
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--seeds="):
 			seeds = a.trim_prefix("--seeds=").to_int()
@@ -54,9 +76,11 @@ func _init() -> void:
 				return
 			_rules = ["auto", "auto"] if which == "rust" else (["auto", "gdscript"] if which == "mixed" else _rules)
 
-	_test_frontier_never_contradicted()
+	if seats == 2:
+		_test_frontier_never_contradicted()
 	_test_detector_fires()
-	print("%-18s %-6s %6s %7s %8s %12s %12s %9s" % ["profile", "bot", "runs", "desyncs", "gap ms", "rb ms/s a", "rb ms/s b", "ticks/s"])
+	print("%d seats on teams %s" % [seats, _teams])
+	print("%-18s %-6s %6s %7s %8s %12s %12s %9s" % ["profile", "bot", "runs", "desyncs", "gap ms", "rb ms/s min", "rb ms/s max", "ticks/s"])
 	for pname: String in PROFILES:
 		_run_profile(pname, "human", seeds, 1)
 		if cpu_seeds > 0:
@@ -110,7 +134,9 @@ func _run_profile(pname: String, bot: String, n: int, first_seed: int) -> void:
 	var unconverged := 0
 	var bad_replays := 0
 	var gap := 0.0
-	var burden := [0.0, 0.0]
+	var burden: Array[float] = []
+	burden.resize(_teams.size())
+	burden.fill(0.0)
 	var ticks := 0
 	for i in n:
 		var r := _run(pname, first_seed + i, bot)
@@ -118,10 +144,12 @@ func _run_profile(pname: String, bot: String, n: int, first_seed: int) -> void:
 		unconverged += 0 if r.converged else 1
 		bad_replays += 0 if r.replays_ok else 1
 		gap += r.gap_ms / n
-		burden[0] += r.burden[0] / n
-		burden[1] += r.burden[1] / n
+		for c in burden.size():
+			burden[c] += r.burden[c] / n
 		ticks += r.ticks
-	print("%-18s %-6s %6d %7d %8.1f %12.1f %12.1f %9d" % [pname, bot, n, desyncs, gap, burden[0], burden[1], ticks / maxi(n, 1) / 60])
+	var high: float = burden.max()
+	var low: float = burden.min()
+	print("%-18s %-6s %6d %7d %8.1f %12.1f %12.1f %9d" % [pname, bot, n, desyncs, gap, low, high, ticks / maxi(n, 1) / 60])
 	if desyncs > 0:
 		_fail("%s/%s: %d desyncs" % [pname, bot, desyncs])
 	if unconverged > 0:
@@ -130,9 +158,10 @@ func _run_profile(pname: String, bot: String, n: int, first_seed: int) -> void:
 		_fail("%s/%s: %d runs saved a replay that doesn't verify" % [pname, bot, bad_replays])
 	# Rollbacks on one side come from the other side's inputs, so loads only compare when
 	# both play at the same rate. CPU players don't, and stop altogether once they lose.
-	var high := maxf(burden[0], burden[1])
-	if bot == "human" and high > FAIR_FLOOR and high > FAIR_RATIO * minf(burden[0], burden[1]):
-		_fail("%s/%s: unfair rollbacks, %.0f vs %.0f ms/s" % [pname, bot, burden[0], burden[1]])
+	# Every other seat's inputs cause rollbacks, so more seats means more of them.
+	var ratio := FAIR_RATIO_ONE_SLOW_ROUTE if pname == "asymmetric" and _teams.size() > 2 else FAIR_RATIO
+	if bot == "human" and high > FAIR_FLOOR * (_teams.size() - 1) and high > ratio * low:
+		_fail("%s/%s: unfair rollbacks, %.0f to %.0f ms/s" % [pname, bot, low, high])
 
 
 func _run(pname: String, sd: int, bot: String, sabotage_frame := -1) -> Dictionary:
@@ -140,11 +169,14 @@ func _run(pname: String, sd: int, bot: String, sabotage_frame := -1) -> Dictiona
 	var rng := RandomNumberGenerator.new()
 	rng.seed = sd * 7919 + 13
 	var game_seed := sd * 104729 + 7
-	# The sabotage below writes to a board, which only means something on GDScript.
-	var rules: Array = ["gdscript", "gdscript"] if sabotage_frame >= 0 else _rules
-	var sess: Array[RollbackSession] = [RollbackSession.new(game_seed, 0, 2 * TPF, false, false, rules[0]),
-			RollbackSession.new(game_seed, 1, 2 * TPF, false, false, rules[1])]
-	var q: Array = [[], []] # q[i] = packets inbound to client i
+	var n := _teams.size()
+	var sess: Array[RollbackSession] = []
+	var q: Array = [] # q[i] = packets inbound to client i
+	for c in n:
+		# The sabotage below writes to a board, which only means something on GDScript.
+		var backend: String = "gdscript" if sabotage_frame >= 0 else _rules[c % 2]
+		sess.append(RollbackSession.new(game_seed, c, 2 * TPF, false, false, backend, null, _teams if n > 2 else PackedInt32Array()))
+		q.append([])
 	var frame := [0]
 	var lossy := [true]
 	var desyncs := [0]
@@ -158,24 +190,36 @@ func _run(pname: String, sd: int, bot: String, sabotage_frame := -1) -> Dictiona
 			return
 		if rng.randf() < p.loss:
 			return
-		var lat: Array = p.ab if to == 1 else p.ba
+		var lat: Array = p.ba if to == 0 else p.ab
 		var arrive: int = frame[0] + rng.randi_range(lat[0], lat[1])
 		if p.has("spike") and to == p.spike[0] and frame[0] >= p.spike[1] and frame[0] < p.spike[1] + p.spike[2]:
 			arrive = maxi(arrive, p.spike[1] + p.spike[2])
 		q[to].append([arrive, pkt])
-	sess[0].outgoing.connect(func(pk: Dictionary) -> void: link.call(1, pk))
-	sess[1].outgoing.connect(func(pk: Dictionary) -> void: link.call(0, pk))
+	# A relay sends each packet on to every other client, saying whose it is. A 1v1 over a
+	# direct link has no relay, and its packets no seat.
+	for c in n:
+		sess[c].outgoing.connect(func(pk: Dictionary) -> void:
+			if n > 2:
+				pk.seat = c
+			for to in n:
+				if to != c:
+					link.call(to, pk))
 
-	var bots := [{"hold": 0, "mask": 0}, {"hold": 0, "mask": 0}]
+	var bots := []
 	var cpus: Array = []
-	if bot == "cpu":
-		cpus = [CpuPlayer.opponent("Overmind", "normal", sd), CpuPlayer.opponent("Overmind", "normal", sd + 1)]
-	var acc := [0, 0]
+	var acc := []
+	var rolled := []
+	var last_inputs := []
+	for c in n:
+		bots.append({"hold": 0, "mask": 0})
+		if bot == "cpu":
+			cpus.append(CpuPlayer.opponent("Overmind", "normal", sd + c))
+		acc.append(0)
+		rolled.append(0)
+		last_inputs.append(0)
 	var drift_ppm: int = p.get("drift_ppm", 0)
 	var drift_acc := 0
-	var rolled := [0, 0]
 	var gap_sum := 0
-	var last_inputs := [0, 0]
 
 	for f in FRAMES:
 		frame[0] = f
@@ -183,7 +227,7 @@ func _run(pname: String, sd: int, bot: String, sabotage_frame := -1) -> Dictiona
 			sess[0].state.boards[1].rng ^= 0x5555
 			for k: int in sess[0]._snaps:
 				sess[0]._snaps[k].boards[1].rng ^= 0x5555
-		for c in 2:
+		for c in n:
 			var s := sess[c]
 			if p.has("late") and p.late[0] == c and f < p.late[1]:
 				_deliver(q[c], s, f)
@@ -212,17 +256,23 @@ func _run(pname: String, sd: int, bot: String, sabotage_frame := -1) -> Dictiona
 
 	# Settle on a clean link, then both must equal an offline replay of the agreed inputs.
 	lossy[0] = false
-	var target: int = maxi(sess[0].state.tick, sess[1].state.tick) + 4 * TPF
+	var target := 0
+	for s in sess:
+		target = maxi(target, s.state.tick + 4 * TPF)
 	for f in range(FRAMES, FRAMES + 240):
 		frame[0] = f
-		for c in 2:
+		for c in n:
 			_deliver(q[c], sess[c], f)
-		for c in 2:
+		for c in n:
 			sess[c].set_local_input(last_inputs[c])
 			sess[c].advance(maxi(target - sess[c].state.tick, 0))
-	var replay := SimState.create(game_seed)
+	var replay := SimState.create(game_seed, false, null, _teams)
+	var inputs := PackedInt32Array()
+	inputs.resize(n)
 	while replay.tick < target:
-		replay.step(sess[0].input_at(0, replay.tick), sess[0].input_at(1, replay.tick))
+		for c in n:
+			inputs[c] = sess[0].input_at(c, replay.tick)
+		replay.step_all(inputs)
 	# What each side would save must stand up to re-simulation, on its own, as a referee sees it.
 	var replays_ok := sabotage_frame >= 0
 	if sabotage_frame < 0:
@@ -232,14 +282,17 @@ func _run(pname: String, sd: int, bot: String, sabotage_frame := -1) -> Dictiona
 			if saved == null or Replay.decode(saved.encode()).verify() != "":
 				replays_ok = false
 	var secs := (FRAMES - WINDOW) / 60.0
+	var converged := true
+	var burden := []
+	for c in n:
+		converged = converged and sess[c].state.tick == target and sess[c].state.checksum() == replay.checksum()
+		burden.append(rolled[c] * MS_PER_TICK / secs)
 	return {
 		"replays_ok": replays_ok,
 		"desyncs": desyncs[0],
-		"converged": sess[0].state.tick == target and sess[1].state.tick == target
-				and sess[0].state.checksum() == sess[1].state.checksum()
-				and sess[0].state.checksum() == replay.checksum(),
+		"converged": converged,
 		"gap_ms": float(gap_sum) / (FRAMES - WINDOW) * MS_PER_TICK,
-		"burden": [rolled[0] * MS_PER_TICK / secs, rolled[1] * MS_PER_TICK / secs],
+		"burden": burden,
 		"ticks": target,
 	}
 

@@ -18,6 +18,18 @@ extends RefCounted
 ## equal rollbacks, even over a route that's slower one way. Whichever side has more drops
 ## a few ticks until they match. Only timing changes, never (tick, input), so the two
 ## sides can act on different measurements without any risk to determinism.
+##
+## Any number of seats works the same way, with "the peer" being every other seat: we run up
+## to MAX_AHEAD past the slowest seat's frontier, checks are compared with every seat's, a
+## change is resent until every seat has it, and a side's advantage is its average over the
+## other seats. Rollbacks come from every seat's late inputs, so equal averages mean equal
+## rollbacks, or nearly: when one player's route is much slower than everyone else's, one
+## clock offset can't suit all their peers at once, and that player's rollbacks can be half
+## or double the others'. Each side compares
+## its own with the least any other seat reports, so everyone eases towards the slowest clock.
+## A clock d ticks ahead of another has an average advantage n/(n-1) d more, so that's how
+## the gap is found. Packets carry their sender's seat as "seat"
+## (added by the relay); a 1v1 packet without one is from the other seat.
 
 signal outgoing(packet: Dictionary)
 signal desynced(tick: int)
@@ -37,22 +49,25 @@ var game_seed: int
 var check_log := PackedInt64Array() # (tick, hash) pairs of every final checkpoint, for replays
 var local_idx: int
 var input_delay: int
-var remote_frontier := -1
-var advantage := NEVER # ticks ahead of the peer's packets, lowest of the last sample period
+var remote_frontier := -1 # the lowest of every other seat's frontier
+var advantage := NEVER # ticks ahead of the other seats' packets, on average, over the last sample period
 var stats := {"rollbacks": 0, "resim": 0, "stalls": 0, "slewed": 0}
 
-var _ticks: Array[PackedInt64Array] = [PackedInt64Array([-1]), PackedInt64Array([-1])]
-var _masks: Array[PackedInt32Array] = [PackedInt32Array([0]), PackedInt32Array([0])]
+var _ticks: Array[PackedInt64Array] = [] # per seat; index 0 is a "nothing pressed yet" sentinel
+var _masks: Array[PackedInt32Array] = []
 var _local_frontier := -1
-var _acked := -1 # highest local change tick the peer has confirmed
+var _frontiers := PackedInt64Array() # per seat; ours and, offline, everyone's are NEVER
+var _acked := -1 # highest local change tick every other seat has confirmed
+var _acked_by := PackedInt64Array() # per seat
 var _rewind_to := NEVER
 var _snaps := {} # tick -> SimState, taken before stepping that tick
 var _checks := {} # tick -> checksum, not yet final
 var _final_checks := {} # tick -> checksum, final; recent ones ride along in packets
-var _remote_checks := {}
-var _remote_advantage := NEVER
-var _remote_tick := -1 # sender's tick on the newest packet
-var _adv_sample := NEVER # lowest advantage this period: jitter only ever adds to it
+var _remote_checks: Array[Dictionary] = [] # per seat: tick -> checksum
+var _remote_advantage := PackedInt64Array() # per seat
+var _remote_tick := PackedInt64Array() # per seat: sender's tick on its newest packet
+var _adv_sample := PackedInt64Array() # per seat, lowest this period: jitter only ever adds to it
+var _inputs := PackedInt32Array() # each seat's input this tick
 var _sync_tick := 0 # when the current sample period started
 var _slew := 0 # ticks still to drop
 var _slew_acc := 0 # ticks run towards the next drop
@@ -60,16 +75,41 @@ var _slew_acc := 0 # ticks run towards the next drop
 
 ## backend: "gdscript", or "auto" for the Rust rules wherever they're available.
 ## rules: what the match plays by, valid; null for the standard rules.
-func _init(seed_value: int, idx: int, delay_ticks: int, offline := false, solo := offline, backend := "gdscript", rules: SimRules = null) -> void:
+## teams: each seat's team, as SimState.create takes them; empty for a 1v1.
+## Offline, every seat is played here: set the others' inputs with set_seat_input.
+func _init(seed_value: int, idx: int, delay_ticks: int, offline := false, solo := offline, backend := "gdscript", rules: SimRules = null, teams := PackedInt32Array()) -> void:
 	game_seed = seed_value
 	if backend == "auto" and RustState.available():
-		state = RustState.make(seed_value, solo, rules)
+		state = RustState.make(seed_value, solo, rules, teams)
 	else:
-		state = SimState.create(seed_value, solo, rules)
+		state = SimState.create(seed_value, solo, rules, teams)
 	local_idx = idx
 	input_delay = delay_ticks
+	var n := state.seats()
+	for p in n:
+		_ticks.append(PackedInt64Array([-1]))
+		_masks.append(PackedInt32Array([0]))
+		_remote_checks.append({})
+	_frontiers.resize(n)
+	_frontiers.fill(-1)
+	_frontiers[local_idx] = NEVER
+	_acked_by.resize(n)
+	_acked_by.fill(-1)
+	_acked_by[local_idx] = NEVER
+	_remote_advantage.resize(n)
+	_remote_advantage.fill(NEVER)
+	_remote_tick.resize(n)
+	_remote_tick.fill(-1)
+	_adv_sample.resize(n)
+	_adv_sample.fill(NEVER)
+	_inputs.resize(n)
 	if offline:
+		_frontiers.fill(NEVER)
 		remote_frontier = NEVER
+
+
+func seats() -> int:
+	return _ticks.size()
 
 
 ## Whether set_local_input would record anything this frame (false while stalled).
@@ -92,9 +132,14 @@ func set_local_input(mask: int) -> void:
 	_local_frontier = t
 
 
-## Offline only (CPU opponent): the other board's input, effective this tick.
+## Offline only (CPU opponent): the other board's input in a 1v1, effective this tick.
 func set_remote_input(mask: int) -> void:
-	var r := 1 - local_idx
+	set_seat_input(1 - local_idx, mask)
+
+
+## Offline only: another seat's input (a CPU's, or another player's on this device),
+## effective this tick.
+func set_seat_input(r: int, mask: int) -> void:
 	var t := state.tick
 	if _ticks[r][-1] == t:
 		_masks[r][-1] = mask
@@ -113,27 +158,43 @@ func receive(pkt: Variant) -> void:
 	var pm: PackedInt32Array = pkt.m
 	if pt.size() != pm.size() or pt.size() > MAX_CHANGES_PER_PACKET:
 		return
-	var r := 1 - local_idx
+	var r: Variant = pkt.get("seat", 1 - local_idx if seats() == 2 else -1)
+	if not (r is int and r >= 0 and r < seats() and r != local_idx):
+		return
 	for i in pt.size():
 		var t := pt[i]
 		# Anything at or before the known frontier/last change is a resend.
-		if t <= _ticks[r][-1] or t <= remote_frontier or t > pkt.f:
+		if t <= _ticks[r][-1] or t <= _frontiers[r] or t > pkt.f:
 			continue
 		_ticks[r].append(t)
 		_masks[r].append(pm[i])
 		if t < state.tick:
 			_rewind_to = mini(_rewind_to, t)
-	if remote_frontier != NEVER:
-		remote_frontier = maxi(remote_frontier, pkt.f)
-	_acked = maxi(_acked, pkt.a)
-	_adv_sample = mini(_adv_sample, state.tick - pkt.s)
-	if pkt.s > _remote_tick: # packets can arrive out of order
-		_remote_tick = pkt.s
-		_remote_advantage = pkt.v
+	if _frontiers[r] != NEVER and pkt.f > _frontiers[r]:
+		_frontiers[r] = pkt.f
+		remote_frontier = _lowest(_frontiers)
+	# What the sender has of ours: "acks" lists it for every seat, "a" is a 1v1's.
+	var ack: Variant = pkt.a
+	if pkt.get("acks") is PackedInt64Array and pkt.acks.size() == seats():
+		ack = pkt.acks[local_idx]
+	if _acked_by[r] < ack:
+		_acked_by[r] = ack
+		_acked = _lowest(_acked_by)
+	_adv_sample[r] = mini(_adv_sample[r], state.tick - pkt.s)
+	if pkt.s > _remote_tick[r]: # packets can arrive out of order
+		_remote_tick[r] = pkt.s
+		_remote_advantage[r] = pkt.v
 	for k in pkt.c:
 		if k is int and pkt.c[k] is int:
-			_remote_checks[k] = pkt.c[k]
+			_remote_checks[r][k] = pkt.c[k]
 			_compare(k)
+
+
+static func _lowest(a: PackedInt64Array) -> int:
+	var low := NEVER
+	for v in a:
+		low = mini(low, v)
+	return low
 
 
 ## Simulate up to n ticks. Returns how many actually ran (fewer when stalled).
@@ -167,16 +228,28 @@ func advance(n: int) -> int:
 ## Closes a sample period and sets how many ticks to drop. The gain is 1/2 and the plan is
 ## replaced rather than added to, so measurements still in flight can't make it overshoot.
 func _measure_advantage() -> void:
-	if state.tick - _sync_tick < SYNC_EVERY or _adv_sample == NEVER:
+	if state.tick - _sync_tick < SYNC_EVERY:
 		return
-	advantage = _adv_sample
-	_adv_sample = NEVER
+	# A seat we haven't heard from this period leaves the measurement for next time.
+	var total := 0
+	for r in seats():
+		if r != local_idx:
+			if _adv_sample[r] == NEVER:
+				return
+			total += _adv_sample[r]
+	advantage = total / (seats() - 1)
+	_adv_sample.fill(NEVER)
 	_sync_tick = state.tick
 	_slew = 0
-	if _remote_advantage != NEVER:
-		var excess := (advantage - _remote_advantage) / 2 # the gap to close is shared
+	var least := NEVER
+	for r in seats():
+		if r != local_idx:
+			least = mini(least, _remote_advantage[r])
+	if least != NEVER:
+		# The gap to the slowest clock. In a 1v1 that's half the difference in advantage.
+		var excess := (advantage - least) * (seats() - 1) / seats()
 		if excess > SYNC_DEADBAND:
-			_slew = excess / 2
+			_slew = excess / 2 # the gap to close is shared
 
 
 ## How many of the n ticks due this frame to skip. Tracked per tick, not per
@@ -213,7 +286,9 @@ func _step() -> void:
 	var t := state.tick
 	if t % SNAP_EVERY == 0:
 		_snaps[t] = state.copy()
-	state.step(input_at(0, t), input_at(1, t))
+	for p in _inputs.size():
+		_inputs[p] = input_at(p, t)
+	state.step_all(_inputs)
 	if state.tick % CHECK_EVERY == 0:
 		_checks[state.tick] = state.checksum()
 
@@ -241,10 +316,13 @@ func _finalize_checks() -> void:
 
 
 func _compare(k: int) -> void:
-	if _final_checks.has(k) and _remote_checks.has(k):
-		if _final_checks[k] != _remote_checks[k]:
-			desynced.emit(k)
-		_remote_checks.erase(k)
+	if not _final_checks.has(k):
+		return
+	for r in seats():
+		if _remote_checks[r].has(k):
+			if _final_checks[k] != _remote_checks[r][k]:
+				desynced.emit(k)
+			_remote_checks[r].erase(k)
 
 
 func _send() -> void:
@@ -253,12 +331,18 @@ func _send() -> void:
 	var to := mini(ts.size(), from + MAX_CHANGES_PER_PACKET)
 	# If truncated, only promise finality up to just before the first unsent change.
 	var frontier := _local_frontier if to == ts.size() else ts[to] - 1
-	outgoing.emit({
+	var pkt := {
 		"f": frontier,
 		"t": ts.slice(from, to),
 		"m": _masks[local_idx].slice(from, to),
-		"a": _ticks[1 - local_idx][-1],
+		"a": _ticks[1 - local_idx][-1] if seats() == 2 else -1,
 		"c": _final_checks.duplicate(),
 		"s": state.tick,
 		"v": advantage,
-	})
+	}
+	if seats() > 2:
+		var acks := PackedInt64Array()
+		for p in seats():
+			acks.append(_ticks[p][-1])
+		pkt.acks = acks
+	outgoing.emit(pkt)
