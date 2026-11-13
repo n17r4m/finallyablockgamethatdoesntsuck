@@ -48,6 +48,7 @@ var _leave_button: Button
 var _leave_asked_msec := -1 # when a tap asked to leave a running game, waiting for the second
 var _notice := ""
 var _notice_msec := -1
+var _sfx: Sfx
 
 
 func _ready() -> void:
@@ -78,6 +79,9 @@ func _ready() -> void:
 	Controls.input_is_delayed = delay > 0
 	if not _pilot:
 		Controls.board_mapper = _views[Net.local_idx].screen_to_cell
+	_sfx = Sfx.new()
+	_sfx.local_idx = Net.local_idx
+	add_child(_sfx)
 	_build_leave_button()
 	Scenes.back_pressed.connect(_ask_to_leave)
 	_last_usec = Time.get_ticks_usec()
@@ -285,6 +289,7 @@ func _process(delta: float) -> void:
 		Net.request_rematch()
 	for p in 2:
 		_views[p].board = session.state.boards[p]
+	_sfx.listen(session.state)
 	if not _pilot:
 		_views[session.local_idx].cursor_cell = Controls.cursor_cell()
 		_views[session.local_idx].cursor_held = Controls.holding()

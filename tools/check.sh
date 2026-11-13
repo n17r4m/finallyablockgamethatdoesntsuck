@@ -35,6 +35,7 @@ run test_any_input
 run test_keys
 run test_title
 run test_settings
+run test_sfx
 run test_match_layout
 run test_leave
 run test_netcode

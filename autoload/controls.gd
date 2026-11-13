@@ -85,6 +85,8 @@ var carry_delay_ms := 0
 var grab_mode := false
 ## "keys", "pad", "mouse" or "touch" once the player has used one: see hint_device().
 var last_device := ""
+## Tests: 0 or 1 stands in for whether a pad is plugged in, so the machine's own doesn't count.
+var pretend_pad := -1
 ## Inputs reach the board late, as they do online, so the board can't say when a swap has finished.
 var input_is_delayed := false
 ## Milliseconds; replaceable so tests can drive time.
@@ -229,7 +231,7 @@ func binding_name(device: String, code: Variant) -> String:
 
 ## A gamepad is plugged in.
 func has_pad() -> bool:
-	return not Input.get_connected_joypads().is_empty()
+	return pretend_pad == 1 if pretend_pad != -1 else not Input.get_connected_joypads().is_empty()
 
 
 ## What the hints should talk about: whatever the player used last, or else the likely way to play.

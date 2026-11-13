@@ -21,6 +21,7 @@ var _config: Node
 func _initialize() -> void:
 	await process_frame # autoloads aren't ready until the first frame
 	_controls = root.get_node("Controls")
+	_controls.pretend_pad = 0 # a pad plugged into this machine mustn't change what is tested
 	_net = root.get_node("Net")
 	_config = root.get_node("Config")
 	_config._cfg.set_value("replay", "save", false) # in memory: set_value would write the player's file
