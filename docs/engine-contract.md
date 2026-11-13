@@ -46,9 +46,24 @@ The first 8 bytes of the SHA-256 of the state's canonical bytes.
 |---|---|
 | `tick` | i64 |
 | `solo` | u8, 0 or 1 |
-| `winner` | i64: -1 playing, 0 or 1 that board won, 2 draw |
-| board 0 | see below |
-| board 1 | see below |
+| `winner` | i64: -1 playing, then the winning team, or the number of teams for a draw (2 in a 1v1) |
+| each board | in seat order, see below |
+| each board's `aim` | i64, in seat order, only when there are more than two boards |
+
+### Seats and teams
+
+A match has 2 to `MAX_SEATS` (8) seats, each with its own well, and every seat is on a team.
+Teams are numbered from 0 with none empty, and there are at least two. A 1v1 is seats `[0, 1]`
+on teams `[0, 1]`. The teams are part of the match, like its rules: they never change and
+aren't hashed, so whatever records a game records them too. Every well starts from the same
+seed. Practice (`solo`) is a 1v1 where board 1 never plays.
+
+Each tick, every board steps in seat order. Then, in seat order, each board's outbox goes to
+one board: starting from the board's `aim`, the first seat round the table that's on another
+team and hadn't lost when the tick began. `aim` becomes the seat after it. A board's `aim`
+starts at the next seat. With nobody to send to, the garbage is dropped. A board that has lost
+steps no further. Then if at most one team has a board that hasn't lost, the match ends: that
+team wins, or it's a draw if none has.
 
 Each board is written field by field, in the order of `SimBoard.STATE`:
 
@@ -98,16 +113,17 @@ the place to start debugging a serializer, since they don't need a working sim.
 | Field | Encoding | Notes |
 |---|---|---|
 | magic | 4 bytes | `FBGR` |
-| format | u8 | 1 |
+| format | u8 | 1 or 2 |
 | rules | u16 | `RULES_VERSION` |
 | tick rate | u16 | `TICK_HZ` |
 | flags | u8 | bit 0: solo. Other bits must be 0 |
 | seed | i64 | |
+| seats | u8, then a u8 team for each | Format 2 only; format 1 is teams `[0, 1]` |
+| rules | varint length, then that many bytes | Format 2 only: the ruleset's bytes, or none for the standard rules. Format 1 is the standard rules |
 | end tick | varint | The game runs for ticks `0 .. end - 1`. At most 2 hours |
 | start hash | 8 bytes | State hash after setup, before any tick |
 | setup | count, then ops | Applied in order to the new state |
-| player 0 inputs | count, then events | |
-| player 1 inputs | count, then events | |
+| inputs | for each seat in order: count, then events | |
 | checkpoints | count, then entries | At least one |
 | trailer | 8 bytes | First 8 bytes of the SHA-256 of everything before it |
 
@@ -123,7 +139,11 @@ the place to start debugging a serializer, since they don't need a working sim.
 | 1 | put | x, row, colour | `put()`: x is 0 to 5, row is 0 to 23 with 0 the bottom visible row, colour is 0 to 5 |
 | 2 | garbage | width, height | `receive_garbage()` with one slab: width is 1 to 6, height is 1 to 12 |
 
-Anything else, including a board other than 0 or 1, is refused.
+Anything else, including a board past the last seat, is refused.
+
+A writer uses format 1 for a 1v1 on the standard rules and format 2 for anything else, so
+every format 1 file is still exactly what it was. Teams that aren't a match, and rules that
+don't decode or aren't valid, are refused.
 
 Real matches have no setup. It exists for hand-built boards and, later, puzzle mode.
 

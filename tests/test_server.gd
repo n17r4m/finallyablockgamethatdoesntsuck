@@ -188,8 +188,7 @@ func _check() -> void:
 	for r: Array in _results:
 		if r[1] != ServerLink.PLAYED:
 			_fail("the server ended the match: winner %d, reason %d, tick %d" % r)
-	# Replay files can't hold a ruleset yet, so only a standard match's replays can verify.
-	for s: RollbackSession in ([a, b] if _custom == null else []):
+	for s: RollbackSession in [a, b]:
 		var saved := Replay.from_session(s)
 		if saved == null or Replay.decode(saved.encode()).verify() != "":
 			_fail("a saved replay doesn't verify")

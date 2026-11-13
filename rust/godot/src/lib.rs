@@ -47,6 +47,38 @@ impl RustSim {
         }
     }
 
+    /// A match on these rules (empty for the standard ones) and teams, one per seat. False,
+    /// and nothing changes, if Rust won't play them.
+    #[func]
+    fn reset_seated(&mut self, game_seed: i64, solo: bool, rules: PackedByteArray, teams: PackedByteArray) -> bool {
+        let rules = if rules.is_empty() { Some(Rules::shared_standard()) } else { Rules::decode(rules.as_slice()).map(Arc::new) };
+        match rules {
+            Some(r) if fbg_sim::state::teams_error(teams.as_slice()).is_none() => {
+                self.state = State::seated(game_seed, solo, r, teams.as_slice());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// One tick with an input per seat. Returns the winner.
+    #[func]
+    fn step_all(&mut self, inputs: PackedInt32Array) -> i64 {
+        let n = self.state.boards.len();
+        let mut masks = [0u32; fbg_sim::consts::MAX_SEATS];
+        for (m, &i) in masks.iter_mut().zip(inputs.as_slice()) {
+            *m = i as u32;
+        }
+        self.state.step_all(&masks[..n]);
+        self.state.winner
+    }
+
+    /// The aim of each board, which the hash covers with more than two.
+    #[func]
+    fn aim(&self) -> PackedInt32Array {
+        self.state.aim.iter().map(|&a| a as i32).collect()
+    }
+
     /// Returns the winner, so GDScript needn't cross the bridge again to learn it.
     #[func]
     fn step(&mut self, input0: i64, input1: i64) -> i64 {

@@ -228,7 +228,9 @@ fn any_legal_game_runs_without_panicking() {
             end_tick: 0,
             start_hash: 0,
             setup,
-            inputs: [Vec::new(), Vec::new()],
+            teams: vec![0, 1],
+            ruleset: fbg_sim::Rules::shared_standard(),
+            inputs: vec![Vec::new(), Vec::new()],
             checkpoints: Vec::new(),
         };
         let mut s = r.new_state();
@@ -317,4 +319,167 @@ fn swapping_the_players_mirrors_the_game() {
     }
     println!("{game} games, {in_play} ticks in play, wins {wins:?}");
     assert!(wins[0] > 0 && wins[1] > 0, "the mirror never saw both sides win");
+}
+
+#[test]
+fn a_match_needs_two_teams_of_numbered_seats() {
+    use fbg_sim::state::teams_error;
+    for ok in [&[0u8, 1][..], &[1, 0, 1, 0], &[0, 1, 2], &[0, 0, 0, 1, 1, 1]] {
+        assert_eq!(teams_error(ok), None, "{ok:?}");
+    }
+    for bad in [&[][..], &[0], &[0, 0], &[0, 2], &[1, 1], &[0, 1, 3], &[0, 1, 0, 1, 0, 1, 0, 1, 0]] {
+        assert!(teams_error(bad).is_some(), "{bad:?}");
+    }
+}
+
+/// Rotating a 2v2 by two seats swaps the teams; the game must be the same game, turned round.
+/// Teams take turns aiming at both opponents, so the rotation must keep that order too.
+#[test]
+fn a_2v2_turned_round_is_the_same_game() {
+    let mut rng = Lcg(9);
+    let mut wins = [0; 3];
+    for game in 1..=12 {
+        let rules = fbg_sim::Rules::shared_standard();
+        let mut a = State::seated(game, false, rules.clone(), &[0, 0, 1, 1]);
+        let mut b = State::seated(game, false, rules, &[0, 0, 1, 1]);
+        while a.winner == -1 && a.tick < 100_000 {
+            let mut m: [u32; 4] = std::array::from_fn(|_| random_mask(&mut rng));
+            let losing = (game % 2) as usize * 2; // a team tops out, so games end
+            m[losing] = RAISE;
+            m[losing + 1] = RAISE;
+            let turned = [m[2], m[3], m[0], m[1]];
+            a.step_all(&m);
+            b.step_all(&turned);
+            for p in 0..4 {
+                assert!(a.boards[p] == b.boards[(p + 2) % 4], "game {game}, tick {}, board {p}", a.tick);
+            }
+            let mirrored = if b.winner == 0 || b.winner == 1 { 1 - b.winner } else { b.winner };
+            assert_eq!(a.winner, mirrored, "game {game}, tick {}", a.tick);
+        }
+        if a.winner >= 0 {
+            wins[a.winner as usize] += 1;
+        }
+    }
+    println!("wins {wins:?}");
+    assert!(wins[0] > 0 && wins[1] > 0, "the mirror never saw both teams win");
+}
+
+/// Plays random inputs on these teams and rules and records it the way a referee would.
+fn record(seed: i64, teams: &[u8], rules: std::sync::Arc<fbg_sim::Rules>) -> Replay {
+    let mut rng = Lcg(seed as u64);
+    let mut s = State::seated(seed, false, rules.clone(), teams);
+    let start_hash = s.checksum();
+    let mut inputs = vec![Vec::new(); teams.len()];
+    let mut checkpoints = Vec::new();
+    let mut masks = vec![0u32; teams.len()];
+    while s.winner == -1 && s.tick < 20 * TICK_HZ as i64 {
+        if s.tick % 12 == 0 {
+            for (p, m) in masks.iter_mut().enumerate() {
+                *m = random_mask(&mut rng);
+                inputs[p].push(InputEvent { tick: s.tick as u64, mask: *m });
+            }
+        }
+        s.step_all(&masks);
+        if s.tick % TICK_HZ as i64 == 0 || s.winner != -1 {
+            checkpoints.push((s.tick as u64, s.checksum()));
+        }
+    }
+    let end_tick = s.tick as u64;
+    Replay {
+        rules: RULES_VERSION,
+        tick_hz: TICK_HZ,
+        seed,
+        solo: false,
+        end_tick,
+        start_hash,
+        setup: vec![SetupOp::Garbage { board: teams.len() as u8 - 1, w: 3, h: 1 }],
+        teams: teams.to_vec(),
+        ruleset: rules,
+        inputs,
+        checkpoints,
+    }
+    .with_start_hash()
+}
+
+trait WithStartHash {
+    fn with_start_hash(self) -> Self;
+}
+
+impl WithStartHash for Replay {
+    /// The setup changes the start; recompute the hashes from it.
+    fn with_start_hash(mut self) -> Replay {
+        let mut s = self.new_state();
+        self.start_hash = s.checksum();
+        let n = self.teams.len();
+        let mut next = vec![0; n];
+        let mut masks = vec![0u32; n];
+        let mut checks = Vec::new();
+        for t in 0..self.end_tick {
+            for p in 0..n {
+                if let Some(e) = self.inputs[p].get(next[p]).filter(|e| e.tick == t) {
+                    masks[p] = e.mask;
+                    next[p] += 1;
+                }
+            }
+            s.step_all(&masks);
+            if s.tick % TICK_HZ as i64 == 0 || s.tick as u64 == self.end_tick {
+                checks.push((s.tick as u64, s.checksum()));
+            }
+        }
+        self.checkpoints = checks;
+        self
+    }
+}
+
+#[test]
+fn a_match_format_1_cant_hold_is_written_as_format_2() {
+    let mut six = fbg_sim::Rules::standard();
+    six.colors = 6;
+    let six = std::sync::Arc::new(six);
+    for (teams, rules) in [
+        (&[0u8, 1, 2][..], fbg_sim::Rules::shared_standard()),
+        (&[0, 0, 1, 1], six.clone()),
+        (&[0, 1], six),
+    ] {
+        let r = record(7, teams, rules);
+        assert!(!r.fits_format_1());
+        let bytes = r.encode();
+        assert_eq!(bytes[4], 2, "{teams:?}");
+        let back = Replay::decode(&bytes).unwrap();
+        assert_eq!(back, r, "{teams:?}");
+        back.verify().unwrap_or_else(|e| panic!("{teams:?}: {e}"));
+        // The rules are part of the game: change them and it no longer verifies.
+        let mut other = back.clone();
+        other.ruleset = if *back.ruleset == fbg_sim::Rules::standard() {
+            let mut r = fbg_sim::Rules::standard();
+            r.colors = 4;
+            std::sync::Arc::new(r)
+        } else {
+            fbg_sim::Rules::shared_standard()
+        };
+        assert!(other.verify().is_err(), "{teams:?} on other rules");
+    }
+    let one = record(3, &[0, 1], fbg_sim::Rules::shared_standard());
+    assert!(one.fits_format_1());
+    assert_eq!(one.encode()[4], 1, "a standard 1v1 is still format 1");
+}
+
+#[test]
+fn format_2_refuses_bad_teams_and_rules() {
+    let r = record(5, &[0, 1, 1], fbg_sim::Rules::shared_standard());
+    let bytes = r.encode();
+    let body = &bytes[..bytes.len() - 8];
+    let at = 4 + 1 + 2 + 2 + 1 + 8; // the seat count
+    for (what, edit) in [
+        ("one seat", vec![(at, 1u8)]),
+        ("one team", vec![(at + 1, 1)]),
+        ("a team that skips one", vec![(at + 2, 2), (at + 3, 2)]),
+        ("rules that don't decode", vec![(at + 4, 3)]),
+    ] {
+        let mut bad = body.to_vec();
+        for (i, v) in edit {
+            bad[i] = v;
+        }
+        assert!(Replay::decode(&seal(bad)).is_err(), "{what}");
+    }
 }

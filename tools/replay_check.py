@@ -56,21 +56,34 @@ def parse(raw):
     if r.take(4) != MAGIC:
         raise ValueError("bad magic")
     out = {"format": r.u8()}
-    if out["format"] != 1:
+    if out["format"] not in (1, 2):
         raise ValueError("unknown format")
     out["rules"], out["tick_hz"] = struct.unpack("<HH", r.take(4))
     out["solo"] = r.u8() == 1
     out["seed"] = struct.unpack("<q", r.take(8))[0]
+    out["teams"] = [0, 1]
+    out["ruleset"] = b""
+    if out["format"] == 2:
+        out["teams"] = list(r.take(r.u8()))
+        teams = out["teams"]
+        count = max(teams, default=-1) + 1
+        if not 2 <= len(teams) <= MAX_SEATS or count < 2 or set(teams) != set(range(count)):
+            raise ValueError("bad teams")
+        out["ruleset"] = r.take(r.var())
+        if out["ruleset"] and out["ruleset"][:4] != b"FBRU":
+            raise ValueError("bad rules")
     out["end_tick"] = r.var()
     out["start_hash"] = r.take(8)
     setup = []
     for _ in range(r.var()):
         kind, board = r.u8(), r.u8()
+        if board >= len(out["teams"]) or kind not in (0, 1, 2):
+            raise ValueError("bad setup op")
         args = {0: 0, 1: 3, 2: 2}[kind]
         setup.append((kind, board) + tuple(r.take(args)))
     out["setup"] = setup
     out["inputs"] = []
-    for _ in range(2):
+    for _ in out["teams"]:
         events = []
         tick = -1
         for _ in range(r.var()):
@@ -114,6 +127,7 @@ BOARD_FIELDS = [
     ("cracking", "f"), ("crack_hang", "n"),
 ]
 CELLS = 6 * 24
+MAX_SEATS = 8
 
 
 def parse_board(r):

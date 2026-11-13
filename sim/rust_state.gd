@@ -17,20 +17,22 @@ static func available() -> bool:
 	if not ClassDB.can_instantiate(CLASS):
 		return false
 	var sim: RefCounted = ClassDB.instantiate(CLASS)
-	return sim.rules_version() == SimConst.RULES_VERSION and sim.has_method("reset_with_rules")
+	return sim.rules_version() == SimConst.RULES_VERSION and sim.has_method("reset_seated")
 
 
 ## A match on the Rust rules. match_rules must be valid; null plays the standard rules.
-static func make(game_seed: int, solo_mode := false, match_rules: SimRules = null) -> RustState:
+## seat_teams as SimState.create's.
+static func make(game_seed: int, solo_mode := false, match_rules: SimRules = null, seat_teams := PackedInt32Array()) -> RustState:
 	var s := RustState.new()
 	s.solo = solo_mode
 	s.rules = match_rules if match_rules else SimRules.shared_standard()
+	if not seat_teams.is_empty():
+		s._seat(seat_teams)
 	s._sim = ClassDB.instantiate(CLASS)
-	if match_rules == null:
-		s._sim.reset(game_seed, solo_mode)
-	elif not s._sim.reset_with_rules(game_seed, solo_mode, match_rules.encode()):
-		push_error("rust/sim refused rules GDScript accepted: " + match_rules.validate())
-	for p in 2:
+	var rule_bytes := match_rules.encode() if match_rules else PackedByteArray()
+	if not s._sim.reset_seated(game_seed, solo_mode, rule_bytes, PackedByteArray(Array(s.teams))):
+		push_error("rust/sim refused a match GDScript accepted: %s %s" % [match_rules.validate() if match_rules else "", s.teams])
+	for p in s.teams.size():
 		var b := SimBoard.new()
 		b.rules = s.rules
 		s.boards.append(b)
@@ -39,7 +41,15 @@ static func make(game_seed: int, solo_mode := false, match_rules: SimRules = nul
 
 
 func step(input0: int, input1: int) -> void:
+	if boards.size() != 2:
+		super.step(input0, input1) # reaches step_all
+		return
 	winner = _sim.step(input0, input1)
+	tick += 1
+
+
+func step_all(inputs: PackedInt32Array) -> void:
+	winner = _sim.step_all(inputs)
 	tick += 1
 
 
@@ -51,6 +61,8 @@ func copy() -> SimState:
 	s.solo = solo
 	s.winner = winner
 	s.rules = rules
+	s.teams = teams
+	s.team_count = team_count
 	s.boards = boards
 	s._sim = _sim.copy()
 	return s
@@ -65,7 +77,9 @@ func canonical_bytes() -> PackedByteArray:
 
 
 func refresh_view() -> void:
-	for p in 2:
+	if boards.size() > 2:
+		aim = _sim.aim()
+	for p in boards.size():
 		var fields: Array = _sim.board_fields(p)
 		var b := boards[p]
 		for i in fields.size():

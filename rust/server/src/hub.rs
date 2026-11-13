@@ -108,8 +108,8 @@ pub struct MatchInfo {
     pub age_s: u64,
     pub clock: i64,     // the server's tick
     pub refereed: i64,  // how far the referee has played
-    pub frontiers: [i64; 2],
-    pub late: [i64; 2], // worst input lateness, ticks
+    pub frontiers: Vec<i64>,
+    pub late: Vec<i64>, // worst input lateness, ticks
     pub over: Option<String>,
     pub away: [bool; 2], // connection dropped; the seat is held for its token
 }
@@ -652,7 +652,7 @@ impl Hub {
         }
         game.announced = true;
         let conns = game.conns;
-        let late = game.referee.latest_input;
+        let late = game.referee.latest_input.clone();
         let replay = game.referee.replay();
         println!(
             "match {mid} end winner={} reason={} tick={} latest_input_ticks={late:?}",
@@ -687,7 +687,7 @@ impl Hub {
             });
         }
         if let Some(store) = &self.store {
-            store.write(Op::Ended { id: mid, winner, reason: name_of(reason), tick, late, replay: saved });
+            store.write(Op::Ended { id: mid, winner, reason: name_of(reason), tick, late: [late[0], late[1]], replay: saved });
         }
     }
 
@@ -940,8 +940,8 @@ impl Hub {
                 age_s: m.started.elapsed().as_secs(),
                 clock: ticks_since(m.started),
                 refereed: m.referee.tick(),
-                frontiers: m.referee.frontiers(),
-                late: m.referee.latest_input,
+                frontiers: m.referee.frontiers().to_vec(),
+                late: m.referee.latest_input.clone(),
                 over: m.referee.outcome().map(|o| describe(&o)),
                 away: m.away.map(|a| a.is_some()),
             })

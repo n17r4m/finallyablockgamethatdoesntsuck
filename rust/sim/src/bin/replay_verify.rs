@@ -11,16 +11,16 @@ fn check(path: &Path) -> Result<String, String> {
     let r = Replay::decode(&bytes)?;
     let end = r.verify()?;
     let winner = match end.winner {
-        -1 => "unfinished",
-        0 => "player 1 won",
-        1 => "player 2 won",
-        _ => "draw",
+        -1 => "unfinished".to_string(),
+        w if w == end.team_count as i64 => "draw".to_string(),
+        w => format!("team {} won", w + 1),
     };
+    let inputs: Vec<String> = r.inputs.iter().map(|i| i.len().to_string()).collect();
     Ok(format!(
-        "{:.1} s, {winner}, inputs {}/{}",
+        "{:.1} s, teams {:?}, {winner}, inputs {}",
         r.end_tick as f64 / TICK_HZ as f64,
-        r.inputs[0].len(),
-        r.inputs[1].len()
+        r.teams,
+        inputs.join("/")
     ))
 }
 

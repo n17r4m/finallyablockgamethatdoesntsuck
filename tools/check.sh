@@ -41,6 +41,7 @@ run test_leave
 run test_netcode
 run test_golden
 run test_rules
+run test_seats
 if command -v python3 > /dev/null; then
 	if python3 tools/replay_check.py tests/golden > /dev/null; then
 		echo "PASS replay_check.py"

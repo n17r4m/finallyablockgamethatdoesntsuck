@@ -28,18 +28,34 @@ class Rec:
 	var masks: Array = [PackedInt32Array(), PackedInt32Array()]
 	var last := [0, 0]
 
-	func _init(seed_value: int, ops_list := [], solo_mode := false) -> void:
+	var teams: PackedInt32Array
+	var rules: SimRules
+
+	func _init(seed_value: int, ops_list := [], solo_mode := false, seat_teams := PackedInt32Array([0, 1]), match_rules: SimRules = null) -> void:
 		game_seed = seed_value
 		solo = solo_mode
 		ops = ops_list
-		state = SimState.create(seed_value, solo_mode)
+		teams = seat_teams
+		rules = match_rules
+		state = SimState.create(seed_value, solo_mode, match_rules, seat_teams)
 		Replay.apply_setup(state, ops_list)
+		for p in range(2, teams.size()):
+			ticks.append(PackedInt64Array())
+			masks.append(PackedInt32Array())
+			last.append(0)
 
 	func run(n: int, m0 := 0, m1 := 0) -> void:
 		for _i in n:
 			_log(0, m0)
 			_log(1, m1)
 			state.step(m0, m1)
+
+	## n ticks with an input per seat.
+	func run_all(n: int, inputs: PackedInt32Array) -> void:
+		for _i in n:
+			for p in inputs.size():
+				_log(p, inputs[p])
+			state.step_all(inputs)
 
 	func _log(p: int, m: int) -> void:
 		if m != last[p]:
@@ -48,7 +64,7 @@ class Rec:
 			masks[p].append(m)
 
 	func to_replay() -> Replay:
-		return Replay.build(game_seed, solo, ops, ticks, masks, state.tick)
+		return Replay.build(game_seed, solo, ops, ticks, masks, state.tick, teams, rules)
 
 
 func _init() -> void:

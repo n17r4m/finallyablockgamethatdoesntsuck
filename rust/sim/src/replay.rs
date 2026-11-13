@@ -4,10 +4,14 @@
 //! size, and every file it accepts is safe to simulate.
 
 use crate::consts::*;
-use crate::state::State;
+use crate::rules::Rules;
+use crate::state::{teams_error, State};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
-pub const FORMAT: u8 = 1;
+/// The newest format, written for any match format 1 can't hold: more than two seats, other
+/// teams, or rules other than the standard ones.
+pub const FORMAT: u8 = 2;
 pub const TRAILER: usize = 8;
 pub const MAX_TICKS: u64 = TICK_HZ as u64 * 60 * 60 * 2; // two hours; a limit on verification cost
 
@@ -39,14 +43,24 @@ pub struct Replay {
     pub end_tick: u64,
     pub start_hash: i64,
     pub setup: Vec<SetupOp>,
-    pub inputs: [Vec<InputEvent>; 2],
+    /// Each seat's team. `[0, 1]` for a 1v1.
+    pub teams: Vec<u8>,
+    /// What the match played by.
+    pub ruleset: Arc<Rules>,
+    /// One list per seat.
+    pub inputs: Vec<Vec<InputEvent>>,
     pub checkpoints: Vec<(u64, i64)>,
 }
 
 impl Replay {
+    /// Whether format 1 can hold this match: a 1v1 on the standard rules.
+    pub fn fits_format_1(&self) -> bool {
+        self.teams == [0, 1] && (Arc::ptr_eq(&self.ruleset, &Rules::shared_standard()) || *self.ruleset == *Rules::shared_standard())
+    }
+
     /// The state at tick 0, before any input.
     pub fn new_state(&self) -> State {
-        let mut s = State::new(self.seed, self.solo);
+        let mut s = State::seated(self.seed, self.solo, self.ruleset.clone(), &self.teams);
         for op in &self.setup {
             match *op {
                 SetupOp::Clear { board } => s.boards[board as usize].clear_all(),
@@ -78,11 +92,12 @@ impl Replay {
         if s.checksum() != self.start_hash {
             return Err("start state differs".into());
         }
-        let mut next = [0usize; 2];
-        let mut mask = [0u32; 2];
+        let n = self.teams.len();
+        let mut next = [0usize; MAX_SEATS];
+        let mut mask = [0u32; MAX_SEATS];
         let mut next_check = 0;
         for t in 0..self.end_tick {
-            for p in 0..2 {
+            for p in 0..n {
                 if let Some(e) = self.inputs[p].get(next[p]) {
                     if e.tick == t {
                         mask[p] = e.mask;
@@ -90,7 +105,7 @@ impl Replay {
                     }
                 }
             }
-            s.step(mask[0], mask[1]);
+            s.step_all(&mask[..n]);
             on_tick(&s);
             if let Some(&(tick, hash)) = self.checkpoints.get(next_check) {
                 if tick == s.tick as u64 {
@@ -109,12 +124,20 @@ impl Replay {
 
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
+        let format = if self.fits_format_1() { 1 } else { FORMAT };
         out.extend_from_slice(MAGIC);
-        out.push(FORMAT);
+        out.push(format);
         out.extend_from_slice(&self.rules.to_le_bytes());
         out.extend_from_slice(&self.tick_hz.to_le_bytes());
         out.push(self.solo as u8);
         out.extend_from_slice(&self.seed.to_le_bytes());
+        if format == 2 {
+            out.push(self.teams.len() as u8);
+            out.extend_from_slice(&self.teams);
+            let rules = if *self.ruleset == *Rules::shared_standard() { Vec::new() } else { self.ruleset.encode() };
+            put_var(&mut out, rules.len() as u64);
+            out.extend_from_slice(&rules);
+        }
         put_var(&mut out, self.end_tick);
         out.extend_from_slice(&self.start_hash.to_le_bytes());
         put_var(&mut out, self.setup.len() as u64);
@@ -161,8 +184,8 @@ impl Replay {
             return Err("not a replay".into());
         }
         let format = r.u8()?;
-        if format != FORMAT {
-            return Err(format!("replay format {format}, this build reads {FORMAT}"));
+        if format != 1 && format != FORMAT {
+            return Err(format!("replay format {format}, this build reads 1 to {FORMAT}"));
         }
         let rules = r.u16()?;
         let tick_hz = r.u16()?;
@@ -171,13 +194,30 @@ impl Replay {
             return Err("unknown flags".into());
         }
         let seed = r.i64()?;
+        let (teams, ruleset) = if format == 1 {
+            (vec![0, 1], Rules::shared_standard())
+        } else {
+            let n = r.u8()? as usize;
+            let teams = r.take(n)?.to_vec();
+            if let Some(why) = teams_error(&teams) {
+                return Err(format!("bad teams: {why}"));
+            }
+            let len = r.count()?;
+            let bytes = r.take(len)?;
+            let ruleset = if bytes.is_empty() {
+                Rules::shared_standard()
+            } else {
+                Arc::new(Rules::decode(bytes).ok_or("bad rules")?)
+            };
+            (teams, ruleset)
+        };
         let end_tick = r.var()?;
         if end_tick > MAX_TICKS {
             return Err("too long".into());
         }
         let start_hash = r.i64()?;
-        let setup = read_setup(&mut r)?;
-        let inputs = [read_inputs(&mut r, end_tick)?, read_inputs(&mut r, end_tick)?];
+        let setup = read_setup(&mut r, teams.len())?;
+        let inputs = (0..teams.len()).map(|_| read_inputs(&mut r, end_tick)).collect::<Result<Vec<_>, _>>()?;
         let checkpoints = read_checks(&mut r, end_tick)?;
         if r.p != body.len() {
             return Err("trailing bytes".into());
@@ -190,6 +230,8 @@ impl Replay {
             end_tick,
             start_hash,
             setup,
+            teams,
+            ruleset,
             inputs,
             checkpoints,
         })
@@ -212,13 +254,13 @@ fn put_var(out: &mut Vec<u8>, mut v: u64) {
     out.push(v as u8);
 }
 
-fn read_setup(r: &mut Reader) -> Result<Vec<SetupOp>, String> {
+fn read_setup(r: &mut Reader, seats: usize) -> Result<Vec<SetupOp>, String> {
     let n = r.count()?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         let kind = r.u8()?;
         let board = r.u8()?;
-        if board > 1 {
+        if board as usize >= seats {
             return Err("bad board in setup".into());
         }
         out.push(match kind {

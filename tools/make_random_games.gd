@@ -8,7 +8,8 @@ extends SceneTree
 const Rec = preload("res://tools/make_golden.gd").Rec
 const HZ := SimConst.TICK_HZ
 const TPF := SimConst.TICKS_PER_FRAME
-const KINDS := ["chaos", "subframe", "two_colours", "garbage_rain", "cpu"]
+const KINDS := ["chaos", "subframe", "two_colours", "garbage_rain", "cpu", "seated"]
+const LAYOUTS := [[0, 0, 1, 1], [0, 1, 2], [0, 1, 1], [1, 0, 1, 0], [0, 0, 0, 1, 1, 1], [0, 1, 2, 3], [0, 1]]
 const CPUS := ["Overmind", "Architect", "Blitz"]
 const LEVELS := ["easy", "normal", "hard", "max"]
 
@@ -111,6 +112,35 @@ func _cpu(_game_seed: int) -> Rec:
 	return rec
 
 
+## Any number of seats on any teams, some on other rules: CPUs and mashers together, with a
+## stack that rises quickly so boards top out and the rest play on.
+func _seated(_game_seed: int) -> Rec:
+	var game_seed := _rng.randi()
+	var teams := PackedInt32Array(LAYOUTS[_rng.randi() % LAYOUTS.size()])
+	var rules: SimRules = null
+	if _rng.randf() < 0.5:
+		rules = SimRules.standard()
+		rules.colors = _rng.randi_range(4, 6)
+		rules.rise = SimRules.Line.new(SimRules.LINEAR, true, [[0, _rng.randi_range(2, 8)], [HZ * 20, _rng.randi_range(8, 30)]])
+	var ops := []
+	for _i in _rng.randi_range(0, 4):
+		ops.append([Replay.OP_GARBAGE, _rng.randi() % teams.size(), _rng.randi_range(1, SimConst.W), _rng.randi_range(1, 3)])
+	var rec := Rec.new(game_seed, ops, false, teams, rules)
+	var cpus: Array = []
+	for p in teams.size():
+		cpus.append(CpuPlayer.opponent(CPUS[_rng.randi() % CPUS.size()], LEVELS[_rng.randi() % LEVELS.size()], game_seed + p) if _rng.randf() < 0.6 else null)
+	var inputs := PackedInt32Array()
+	inputs.resize(teams.size())
+	while rec.state.winner == -1 and rec.state.tick < HZ * _seconds:
+		for p in teams.size():
+			inputs[p] = cpus[p].next_input(rec.state.boards[p]) if cpus[p] else _mask()
+		rec.run_all(TPF, inputs)
+		_note(rec)
+	inputs.fill(0)
+	rec.run_all(HZ, inputs)
+	return rec
+
+
 func _mash(rec: Rec, hold: Callable) -> void:
 	while rec.state.tick < HZ * _seconds and rec.state.winner == -1:
 		var m0 := _mask()
@@ -136,4 +166,7 @@ func _note(rec: Rec) -> void:
 		_best_combo = maxi(_best_combo, b.fx_combo)
 		if b.time_rate < SimConst.TIME_UNIT:
 			_bullet += 1
-	_slabs = maxi(_slabs, rec.state.boards[0].next_gid - 1 + rec.state.boards[1].next_gid - 1)
+	var slabs := 0
+	for b: SimBoard in rec.state.boards:
+		slabs += b.next_gid - 1
+	_slabs = maxi(_slabs, slabs)

@@ -14,6 +14,10 @@ const H := 12 # visible rows
 const BUF := 12 # hidden rows above the well where garbage spawns and stacks
 const ROWS := BUF + H
 const COLORS := 5
+## Seats in a match. A limit of cost, not of the game: every client rolls back every board, and
+## eight boards at 720 Hz is about what a phone can resimulate. Battle royale needs its own
+## coupling past this (docs/game-modes.md).
+const MAX_SEATS := 8
 const GARBAGE := 7 # cell colour value for garbage; panels are 1..COLORS
 
 # Input bitmask

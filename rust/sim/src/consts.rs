@@ -10,6 +10,9 @@ pub const ROWS: usize = BUF + H;
 pub const N: usize = W * ROWS;
 pub const TOP: usize = BUF; // first visible row
 pub const COLORS: u8 = 5;
+/// Seats in a match. A limit of cost, not of the game: every client rolls back every board, and
+/// eight boards at 720 Hz is about what a phone can resimulate.
+pub const MAX_SEATS: usize = 8;
 pub const GARBAGE: u8 = 7;
 
 pub const UP: u32 = 1;

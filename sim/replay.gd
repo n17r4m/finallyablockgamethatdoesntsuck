@@ -5,7 +5,9 @@ extends RefCounted
 ## docs/engine-contract.md; decode() treats its input as hostile, since a server will.
 
 const MAGIC := 0x52474246 # "FBGR", little-endian
-const FORMAT := 1
+## The newest format, written for any match format 1 can't hold: more than two seats, other
+## teams, or rules other than the standard ones.
+const FORMAT := 2
 const TRAILER := 8
 const MAX_TICKS := SimConst.TICK_HZ * 60 * 60 * 2 # two hours; a limit on verification cost
 
@@ -18,6 +20,9 @@ var solo := false
 var end_tick := 0
 var start_hash := 0
 var setup: Array = [] # [kind, board, a, b, c]: see apply_setup
+var teams := PackedInt32Array([0, 1]) # each seat's team
+var ruleset: SimRules = SimRules.shared_standard() # what the match played by
+## One list per seat.
 var ticks: Array[PackedInt64Array] = [PackedInt64Array(), PackedInt64Array()]
 var masks: Array[PackedInt32Array] = [PackedInt32Array(), PackedInt32Array()]
 var check_ticks := PackedInt64Array()
@@ -38,11 +43,12 @@ static func from_session(s: RollbackSession) -> Replay:
 	r.game_seed = s.game_seed
 	r.solo = s.state.solo
 	r.end_tick = s.check_log[-2]
-	r.start_hash = SimState.create(s.game_seed, s.state.solo).checksum()
+	r._seat(s.state.teams, s.state.rules)
+	r.start_hash = r.new_state().checksum()
 	for i in range(0, s.check_log.size(), 2):
 		r.check_ticks.append(s.check_log[i])
 		r.check_hashes.append(s.check_log[i + 1])
-	for p in 2:
+	for p in r.teams.size():
 		var log := s.input_log(p, r.end_tick)
 		r.ticks[p] = log[0]
 		r.masks[p] = log[1]
@@ -50,14 +56,16 @@ static func from_session(s: RollbackSession) -> Replay:
 
 
 ## A replay made from scratch. Simulates it to fill in the hashes: a checkpoint
-## every second and one at the end.
-static func build(seed_value: int, solo_mode: bool, ops: Array, in_ticks: Array, in_masks: Array, end: int) -> Replay:
+## every second and one at the end. Inputs are one list per seat.
+static func build(seed_value: int, solo_mode: bool, ops: Array, in_ticks: Array, in_masks: Array, end: int,
+		seat_teams := PackedInt32Array([0, 1]), rules: SimRules = null) -> Replay:
 	var r := Replay.new()
 	r.game_seed = seed_value
 	r.solo = solo_mode
 	r.setup = ops
 	r.end_tick = end
-	for p in 2:
+	r._seat(seat_teams, rules)
+	for p in seat_teams.size():
 		r.ticks[p] = in_ticks[p]
 		r.masks[p] = in_masks[p]
 	r.start_hash = r.new_state().checksum()
@@ -65,9 +73,29 @@ static func build(seed_value: int, solo_mode: bool, ops: Array, in_ticks: Array,
 	return r
 
 
+func _seat(seat_teams: PackedInt32Array, rules: SimRules) -> void:
+	teams = seat_teams
+	ruleset = rules if rules else SimRules.shared_standard()
+	ticks.resize(teams.size())
+	masks.resize(teams.size())
+	for p in teams.size():
+		if ticks[p] == null:
+			ticks[p] = PackedInt64Array()
+			masks[p] = PackedInt32Array()
+
+
+## Whether format 1 can hold this match: a 1v1 on the standard rules.
+func fits_format_1() -> bool:
+	return teams == PackedInt32Array([0, 1]) and _standard_rules()
+
+
+func _standard_rules() -> bool:
+	return ruleset == SimRules.shared_standard() or ruleset.encode() == SimRules.shared_standard().encode()
+
+
 ## The state at tick 0, before any input.
 func new_state() -> SimState:
-	var s := SimState.create(game_seed, solo)
+	var s := SimState.create(game_seed, solo, ruleset, teams)
 	apply_setup(s, setup)
 	return s
 
@@ -100,21 +128,18 @@ func _simulate(check: bool, on_tick: Callable) -> String:
 	if check and s.checksum() != start_hash:
 		return "start state differs"
 	var call_back := on_tick.is_valid()
-	var t0 := ticks[0]
-	var t1 := ticks[1]
-	var i0 := 0
-	var i1 := 0
-	var m0 := 0
-	var m1 := 0
+	var n := teams.size()
+	var at := PackedInt32Array()
+	at.resize(n)
+	var now := PackedInt32Array()
+	now.resize(n)
 	var next_check := 0
 	for t in end_tick:
-		if i0 < t0.size() and t0[i0] == t:
-			m0 = masks[0][i0]
-			i0 += 1
-		if i1 < t1.size() and t1[i1] == t:
-			m1 = masks[1][i1]
-			i1 += 1
-		s.step(m0, m1)
+		for p in n:
+			if at[p] < ticks[p].size() and ticks[p][at[p]] == t:
+				now[p] = masks[p][at[p]]
+				at[p] += 1
+		s.step_all(now)
 		if call_back:
 			on_tick.call(s)
 		if check:
@@ -134,12 +159,20 @@ func _simulate(check: bool, on_tick: Callable) -> String:
 
 func encode() -> PackedByteArray:
 	var out := StreamPeerBuffer.new()
+	var format := 1 if fits_format_1() else FORMAT
 	out.put_u32(MAGIC)
-	out.put_u8(FORMAT)
+	out.put_u8(format)
 	out.put_u16(rules)
 	out.put_u16(tick_hz)
 	out.put_u8(1 if solo else 0)
 	out.put_64(game_seed)
+	if format == 2:
+		out.put_u8(teams.size())
+		for t in teams:
+			out.put_u8(t)
+		var rule_bytes := PackedByteArray() if _standard_rules() else ruleset.encode()
+		_put_var(out, rule_bytes.size())
+		out.put_data(rule_bytes)
 	_put_var(out, end_tick)
 	out.put_64(start_hash)
 	_put_var(out, setup.size())
@@ -151,7 +184,7 @@ func encode() -> PackedByteArray:
 			out.put_u8(op[3])
 		if op[0] == OP_PUT:
 			out.put_u8(op[4])
-	for p in 2:
+	for p in teams.size():
 		_put_var(out, ticks[p].size())
 		var prev := -1
 		for i in ticks[p].size():
@@ -210,8 +243,8 @@ func _read(bytes: PackedByteArray) -> void:
 	_p = 4
 	var format := _b.decode_u8(_p)
 	_p += 1
-	if format != FORMAT:
-		error = "replay format %d, this build reads %d" % [format, FORMAT]
+	if format != 1 and format != FORMAT:
+		error = "replay format %d, this build reads 1 to %d" % [format, FORMAT]
 		return
 	rules = _b.decode_u16(_p)
 	tick_hz = _b.decode_u16(_p + 2)
@@ -224,6 +257,8 @@ func _read(bytes: PackedByteArray) -> void:
 	solo = flags == 1
 	game_seed = _b.decode_s64(_p)
 	_p += 8
+	if format == 2 and not _read_match():
+		return
 	end_tick = _var()
 	if error != "":
 		return
@@ -235,13 +270,43 @@ func _read(bytes: PackedByteArray) -> void:
 	start_hash = _b.decode_s64(_p)
 	_p += 8
 	_read_setup()
-	for p in 2:
+	for p in teams.size():
 		if error == "":
 			_read_inputs(p)
 	if error == "":
 		_read_checks()
 	if error == "" and _p != _b.size():
 		error = "trailing bytes"
+
+
+## Format 2's seats, teams and rules. False, with the error set, if they aren't a match.
+func _read_match() -> bool:
+	if not _have(1):
+		return false
+	var n := _b.decode_u8(_p)
+	_p += 1
+	if not _have(n):
+		return false
+	var seat_teams := PackedInt32Array()
+	for k in n:
+		seat_teams.append(_b.decode_u8(_p + k))
+	_p += n
+	var why := SimState.teams_error(seat_teams)
+	if why != "":
+		error = "bad teams: " + why
+		return false
+	var size := _count()
+	if error != "" or not _have(size):
+		return false
+	var rules_read: SimRules = null
+	if size > 0:
+		rules_read = SimRules.decode(_b.slice(_p, _p + size))
+		if rules_read == null:
+			error = "bad rules"
+			return false
+	_p += size
+	_seat(seat_teams, rules_read)
+	return true
 
 
 func _read_setup() -> void:
@@ -252,7 +317,7 @@ func _read_setup() -> void:
 		var kind := _b.decode_u8(_p)
 		var board := _b.decode_u8(_p + 1)
 		_p += 2
-		if board > 1:
+		if board >= teams.size():
 			error = "bad board in setup"
 			return
 		match kind:
