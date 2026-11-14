@@ -31,6 +31,8 @@ pub mod features {
     pub const CUSTOM_RULES: u64 = 1;
     /// Gets its seat back after a dropped connection, with the token from its start.
     pub const RESUME: u64 = 2;
+    /// Plays matches of more than two seats: reads `acks`, and sends them.
+    pub const SEATS: u64 = 4;
 }
 
 // Message numbers. Games send 1 to 15, the server 16 and up.
@@ -197,7 +199,10 @@ impl<const N: usize> From<&str> for Text<N> {
 pub struct InputMsg {
     pub seat: u8,
     pub frontier: i64, // inputs are final up to and including this tick
-    pub ack: i64,      // newest change of the other players' this sender has seen
+    pub ack: i64,      // newest change of the other player's this sender has seen, in a 1v1
+    /// With more than two seats: the newest change of each seat's this sender has seen, by
+    /// seat. Its own entry means nothing. Empty in a 1v1, which has `ack`.
+    pub acks: List<i64, MAX_SEATS>,
     pub tick: i64,     // the sender's clock
     pub advantage: i64,
     pub changes: List<(i64, i32), MAX_CHANGES>, // (tick, mask)
@@ -229,8 +234,9 @@ pub enum ClientMsg {
     /// Quick match. Mode 0 is standard 1v1, the only one so far.
     Queue { mode: u32 },
     /// Meet whoever else asks for this code. Whoever's first is the host, and their rules
-    /// (none: standard) are the match's.
-    Room { code: Text<MAX_ROOM>, rules: Vec<u8> },
+    /// (none: standard) and teams are the match's: each seat's team, in the order players
+    /// arrive. No teams: a 1v1. The match starts when every seat is taken.
+    Room { code: Text<MAX_ROOM>, rules: Vec<u8>, teams: Vec<u8> },
     Input(InputMsg),
     Rematch,
     Ping(u64),
@@ -297,12 +303,13 @@ pub enum ServerMsg {
     Welcome { features: u64, resumed: u64 },
     /// The connection closes after this.
     Refused { code: Refusal, text: String },
-    /// In the queue, or in a room waiting for someone with the same code.
-    Waiting { room: Text<MAX_ROOM> },
+    /// In the queue, or in a room waiting for someone with the same code: `here` of its
+    /// `seats` are taken. Sent again whenever that changes.
+    Waiting { room: Text<MAX_ROOM>, here: u8, seats: u8 },
     /// `resume`: this seat's token, for a hello after a dropped connection.
     Start { match_id: u64, seed: i64, seat: u8, rules: Vec<u8>, seats: List<SeatInfo, MAX_SEATS>, resume: Token },
     Input(InputMsg),
-    /// `winner` is a seat, unless `draw`.
+    /// `winner` is a team, unless `draw`. In a 1v1, seat and team are the same.
     Result { winner: u8, draw: bool, reason: EndReason, tick: i64 },
     Pong(u64),
     /// That seat's player left after the game; this player is back in the lobby.
@@ -396,6 +403,7 @@ fn write_input(w: &mut Writer, m: &InputMsg) {
     w.packed(7, m.changes.iter().map(|c| c.1 as u32 as u64));
     w.packed(8, deltas(m.frontier, m.checks.iter().map(|c| c.0)));
     w.packed_fixed64(9, m.checks.iter().map(|c| c.1));
+    w.packed(10, deltas(m.frontier, m.acks.iter().copied()));
 }
 
 fn read_ticks<const N: usize>(b: &[u8], out: &mut List<i64, N>) -> Read<()> {
@@ -416,6 +424,7 @@ fn read_input(b: &[u8]) -> Read<InputMsg> {
     let mut masks: List<i32, MAX_CHANGES> = List::default();
     let mut check_ticks: List<i64, MAX_CHECKS> = List::default();
     let mut hashes: List<i64, MAX_CHECKS> = List::default();
+    let mut acks: List<i64, MAX_SEATS> = List::default();
     fields(b, |field, v| {
         match field {
             1 => m.seat = small(v, MAX_SEATS as u64 - 1)? as u8,
@@ -434,6 +443,7 @@ fn read_input(b: &[u8]) -> Read<InputMsg> {
                 }
             }
             8 => read_ticks(need(v.bytes())?, &mut check_ticks)?,
+            10 => read_ticks(need(v.bytes())?, &mut acks)?,
             9 => {
                 let b = need(v.bytes())?;
                 if b.len() % 8 != 0 || b.len() / 8 > MAX_CHECKS {
@@ -460,6 +470,9 @@ fn read_input(b: &[u8]) -> Read<InputMsg> {
     }
     for k in 0..check_ticks.len() {
         m.checks.push((check_ticks[k].wrapping_add(f), hashes[k]));
+    }
+    for a in acks.iter() {
+        m.acks.push(a.wrapping_add(f));
     }
     Ok(m)
 }
@@ -489,10 +502,13 @@ impl ClientMsg {
                 w.raw_varint(QUEUE);
                 w.uint(1, *mode as u64);
             }
-            ClientMsg::Room { code, rules } => {
+            ClientMsg::Room { code, rules, teams } => {
                 w.raw_varint(ROOM);
                 w.bytes(1, code.as_bytes());
                 w.bytes(2, rules);
+                if !teams.is_empty() {
+                    w.bytes(3, teams);
+                }
             }
             ClientMsg::Input(m) => {
                 w.raw_varint(INPUT);
@@ -560,9 +576,17 @@ impl ClientMsg {
             ROOM => {
                 let mut code: Text<MAX_ROOM> = Text::default();
                 let mut rules = Vec::new();
+                let mut teams = Vec::new();
                 fields(b, |field, v| {
                     match field {
                         1 => code = text(v)?,
+                        3 => {
+                            let t = need(v.bytes())?;
+                            if t.len() > MAX_SEATS {
+                                return Err(Damaged);
+                            }
+                            teams = t.to_vec();
+                        }
                         2 => {
                             let r = need(v.bytes())?;
                             if r.len() > MAX_RULES {
@@ -577,7 +601,7 @@ impl ClientMsg {
                 if code.is_empty() || !code.bytes().all(|c| c.is_ascii_alphanumeric()) {
                     return Err(Damaged);
                 }
-                ClientMsg::Room { code: Text::new(&code.to_ascii_uppercase()), rules }
+                ClientMsg::Room { code: Text::new(&code.to_ascii_uppercase()), rules, teams }
             }
             INPUT => ClientMsg::Input(read_input(b)?),
             REMATCH => ClientMsg::Rematch,
@@ -621,9 +645,11 @@ impl ServerMsg {
                 w.uint(1, *code as u64);
                 w.bytes(2, Text::<MAX_TEXT>::new(text).as_bytes());
             }
-            ServerMsg::Waiting { room } => {
+            ServerMsg::Waiting { room, here, seats } => {
                 w.raw_varint(WAITING);
                 w.bytes(1, room.as_bytes());
+                w.uint(2, *here as u64);
+                w.uint(3, *seats as u64);
             }
             ServerMsg::Start { match_id, seed, seat, rules, seats, resume } => {
                 w.raw_varint(START);
@@ -735,14 +761,17 @@ impl ServerMsg {
                 ServerMsg::Refused { code, text }
             }
             WAITING => {
-                let mut room = Text::default();
+                let (mut room, mut here, mut seats) = (Text::default(), 0, 0);
                 fields(b, |field, v| {
-                    if field == 1 {
-                        room = text(v)?;
+                    match field {
+                        1 => room = text(v)?,
+                        2 => here = small(v, MAX_SEATS as u64)? as u8,
+                        3 => seats = small(v, MAX_SEATS as u64)? as u8,
+                        _ => {}
                     }
                     Ok(())
                 })?;
-                ServerMsg::Waiting { room }
+                ServerMsg::Waiting { room, here, seats }
             }
             START => {
                 let (mut match_id, mut seed, mut seat) = (0, 0, 0);

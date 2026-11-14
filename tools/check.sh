@@ -88,7 +88,10 @@ if command -v cargo > /dev/null; then
 		run test_server --url=ws://127.0.0.1:47199 --seconds=20
 		run test_server --url=ws://127.0.0.1:47199 --seconds=10 --custom
 		run test_server --url=ws://127.0.0.1:47199 --seconds=12 --drop
+		# A room of four, one of them dropping out and back in.
+		run test_server --url=ws://127.0.0.1:47199 --seconds=14 --format=2v2 --drop
 		[ $full -eq 1 ] && run test_server --url=ws://127.0.0.1:47199 --seconds=60 --bad-link
+		[ $full -eq 1 ] && run test_server --url=ws://127.0.0.1:47199 --seconds=30 --format=3-way --bad-link
 		kill "$server" 2> /dev/null
 		wait "$server" 2> /dev/null
 	else

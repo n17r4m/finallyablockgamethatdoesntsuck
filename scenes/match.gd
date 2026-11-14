@@ -382,9 +382,12 @@ func _label(p: int) -> String:
 		if session.seats() > 2:
 			return ("ALLY %s" if ally else "%s") % _cpus[p].name
 		return "%s (%s)" % [Net.cpu_name, Net.cpu_level]
+	var name := Net.seat_names[p].to_upper() if p < Net.seat_names.size() else ""
 	if session.seats() > 2:
-		return "ALLY" if ally else "THEM"
-	return Net.opponent_name.to_upper() if Net.opponent_name != "" else "THEM"
+		if name == "":
+			return "ALLY" if ally else "THEM"
+		return ("ALLY %s" if ally else "%s") % name
+	return name if name != "" else "THEM"
 
 
 func _exit_tree() -> void:

@@ -30,13 +30,17 @@ impl Client {
 
     /// The next message, or None once the server has closed the connection.
     async fn recv(&mut self) -> Option<ServerMsg> {
-        loop {
-            match timeout(WAIT, self.0.next()).await.expect("the server went quiet") {
-                Some(Ok(Message::Binary(b))) => return Some(ServerMsg::read(&b).expect("the server sent junk")),
-                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return None,
-                Some(Ok(_)) => {}
+        // One deadline for the lot: the server's pings every 2 s mustn't keep a wait alive.
+        let next = async {
+            loop {
+                match self.0.next().await {
+                    Some(Ok(Message::Binary(b))) => return Some(ServerMsg::read(&b).expect("the server sent junk")),
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return None,
+                    Some(Ok(_)) => {}
+                }
             }
-        }
+        };
+        timeout(WAIT, next).await.expect("the server went quiet")
     }
 
     async fn hello(url: &str) -> Client {
@@ -75,9 +79,9 @@ async fn start_server(config: Config) -> String {
 /// Two clients in a match by way of a room, returning them and the seed.
 async fn pair(url: &str, code: &str) -> (Client, Client, i64) {
     let (mut a, mut b) = (Client::hello(url).await, Client::hello(url).await);
-    a.send(ClientMsg::Room { code: code.into(), rules: vec![] }).await;
+    a.send(ClientMsg::Room { code: code.into(), rules: vec![], teams: vec![] }).await;
     assert!(matches!(a.recv().await, Some(ServerMsg::Waiting { .. })));
-    b.send(ClientMsg::Room { code: code.into(), rules: vec![] }).await;
+    b.send(ClientMsg::Room { code: code.into(), rules: vec![], teams: vec![] }).await;
     let (sa, sb) = (a.recv().await.unwrap(), b.recv().await.unwrap());
     let (ServerMsg::Start { match_id: ma, seed: x, seat: 0, .. }, ServerMsg::Start { match_id: mb, seed: y, seat: 1, .. }) = (sa, sb) else {
         panic!("expected seats 0 and 1");
@@ -118,11 +122,11 @@ async fn the_queue_pairs_players_and_each_match_gets_its_own_seed() {
 async fn room_codes_keep_games_apart() {
     let url = start_server(Config::default()).await;
     let (mut a, mut b, mut c) = (Client::hello(&url).await, Client::hello(&url).await, Client::hello(&url).await);
-    a.send(ClientMsg::Room { code: "ONE".into(), rules: vec![] }).await;
+    a.send(ClientMsg::Room { code: "ONE".into(), rules: vec![], teams: vec![] }).await;
     assert!(matches!(a.recv().await, Some(ServerMsg::Waiting { .. })));
-    b.send(ClientMsg::Room { code: "TWO".into(), rules: vec![] }).await;
+    b.send(ClientMsg::Room { code: "TWO".into(), rules: vec![], teams: vec![] }).await;
     assert!(matches!(b.recv().await, Some(ServerMsg::Waiting { .. })));
-    c.send(ClientMsg::Room { code: "one".into(), rules: vec![] }).await; // codes ignore case
+    c.send(ClientMsg::Room { code: "one".into(), rules: vec![], teams: vec![] }).await; // codes ignore case
     assert!(matches!(c.recv().await, Some(ServerMsg::Start { seat: 1, .. })));
     assert!(matches!(a.recv().await, Some(ServerMsg::Start { seat: 0, .. })));
 }
@@ -131,7 +135,7 @@ async fn room_codes_keep_games_apart() {
 async fn inputs_reach_the_other_player_unchanged() {
     let url = start_server(Config::default()).await;
     let (mut a, mut b, _) = pair(&url, "RELAY").await;
-    let m = InputMsg { seat: 0, frontier: 30, ack: -1, tick: 6, advantage: 3, changes: vec![(29, 16)].into(), checks: vec![].into() };
+    let m = InputMsg { seat: 0, frontier: 30, ack: -1, tick: 6, advantage: 3, changes: vec![(29, 16)].into(), checks: vec![].into(), acks: List::default() };
     a.send(ClientMsg::Input(m.clone())).await;
     assert_eq!(b.recv().await, Some(ServerMsg::Input(m)));
 }
@@ -200,7 +204,7 @@ async fn junk_costs_the_sender_its_connection_and_nobody_else_anything() {
     c.raw(vec![0; 1 << 20]).await;
     assert_eq!(c.recv().await, None);
     // Anything before saying hello.
-    for early in [ClientMsg::Queue { mode: 0 }, ClientMsg::Room { code: "A".into(), rules: vec![] }, ClientMsg::Input(InputMsg::default()), ClientMsg::Rematch] {
+    for early in [ClientMsg::Queue { mode: 0 }, ClientMsg::Room { code: "A".into(), rules: vec![], teams: vec![] }, ClientMsg::Input(InputMsg::default()), ClientMsg::Rematch] {
         let mut c = Client::connect(&url).await;
         c.send(early).await;
         assert_eq!(c.recv().await, None);
@@ -267,15 +271,15 @@ async fn a_whole_match_ends_on_the_refereed_result_and_saves_a_replay() {
     while sim.tick < hz {
         sim.step(32, 0);
     }
-    a.send(ClientMsg::Input(InputMsg { seat: 0, frontier: hz - 1, ack: -1, tick: hz, advantage: 0, changes: std::mem::take(&mut changes), checks: vec![(hz, sim.checksum())].into() })).await;
-    b.send(ClientMsg::Input(InputMsg { seat: 0, frontier: hz - 1, ack: -1, tick: hz, advantage: 0, changes: vec![].into(), checks: vec![(hz, sim.checksum())].into() })).await;
+    a.send(ClientMsg::Input(InputMsg { seat: 0, frontier: hz - 1, ack: -1, tick: hz, advantage: 0, changes: std::mem::take(&mut changes), checks: vec![(hz, sim.checksum())].into(), acks: List::default() })).await;
+    b.send(ClientMsg::Input(InputMsg { seat: 0, frontier: hz - 1, ack: -1, tick: hz, advantage: 0, changes: vec![].into(), checks: vec![(hz, sim.checksum())].into(), acks: List::default() })).await;
     // b lies about the next second, and a tells the truth. The referee should say so.
     while sim.tick < 2 * hz {
         sim.step(32, 0);
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
-    a.send(ClientMsg::Input(InputMsg { seat: 0, frontier: 2 * hz - 1, ack: -1, tick: 2 * hz, advantage: 0, changes: vec![].into(), checks: vec![(2 * hz, sim.checksum())].into() })).await;
-    b.send(ClientMsg::Input(InputMsg { seat: 0, frontier: 2 * hz - 1, ack: -1, tick: 2 * hz, advantage: 0, changes: vec![].into(), checks: vec![(2 * hz, !sim.checksum())].into() })).await;
+    a.send(ClientMsg::Input(InputMsg { seat: 0, frontier: 2 * hz - 1, ack: -1, tick: 2 * hz, advantage: 0, changes: vec![].into(), checks: vec![(2 * hz, sim.checksum())].into(), acks: List::default() })).await;
+    b.send(ClientMsg::Input(InputMsg { seat: 0, frontier: 2 * hz - 1, ack: -1, tick: 2 * hz, advantage: 0, changes: vec![].into(), checks: vec![(2 * hz, !sim.checksum())].into(), acks: List::default() })).await;
     for c in [&mut a, &mut b] {
         assert_eq!(c.recv_event().await, Some(ServerMsg::Result { winner: 0, draw: false, reason: EndReason::WrongState, tick: 2 * hz }));
     }
@@ -304,10 +308,10 @@ async fn a_room_plays_on_its_hosts_rules() {
     rules.swap = 30;
     let bytes = rules.encode();
     let (mut a, mut b) = (Client::hello(&url).await, Client::hello(&url).await);
-    a.send(ClientMsg::Room { code: "SIX".into(), rules: bytes.clone() }).await;
-    assert_eq!(a.recv().await, Some(ServerMsg::Waiting { room: "SIX".into() }));
+    a.send(ClientMsg::Room { code: "SIX".into(), rules: bytes.clone(), teams: vec![] }).await;
+    assert_eq!(a.recv().await, Some(ServerMsg::Waiting { room: "SIX".into(), here: 1, seats: 2 }));
     // Whoever joins brings no rules of their own.
-    b.send(ClientMsg::Room { code: "SIX".into(), rules: vec![] }).await;
+    b.send(ClientMsg::Room { code: "SIX".into(), rules: vec![], teams: vec![] }).await;
     for c in [&mut a, &mut b] {
         let Some(ServerMsg::Start { rules: got, seats, .. }) = c.recv().await else { panic!("no start") };
         assert_eq!(got, bytes);
@@ -319,15 +323,15 @@ async fn a_room_plays_on_its_hosts_rules() {
 async fn the_standard_rules_go_as_none_and_damaged_rules_are_turned_away() {
     let url = start_server(Config::default()).await;
     let (mut a, mut b) = (Client::hello(&url).await, Client::hello(&url).await);
-    a.send(ClientMsg::Room { code: "STD".into(), rules: fbg_sim::Rules::standard().encode() }).await;
+    a.send(ClientMsg::Room { code: "STD".into(), rules: fbg_sim::Rules::standard().encode(), teams: vec![] }).await;
     assert!(matches!(a.recv().await, Some(ServerMsg::Waiting { .. })));
-    b.send(ClientMsg::Room { code: "STD".into(), rules: vec![] }).await;
+    b.send(ClientMsg::Room { code: "STD".into(), rules: vec![], teams: vec![] }).await;
     assert!(matches!(b.recv().await, Some(ServerMsg::Start { rules, .. }) if rules.is_empty()));
 
     let mut c = Client::hello(&url).await;
     let mut bad = fbg_sim::Rules::standard().encode();
     bad[5] = 99; // 99 colours
-    c.send(ClientMsg::Room { code: "BAD".into(), rules: bad }).await;
+    c.send(ClientMsg::Room { code: "BAD".into(), rules: bad, teams: vec![] }).await;
     assert!(matches!(c.recv().await, Some(ServerMsg::Notice(t)) if t.contains("can't be played")));
     // Still in the lobby, and free to try again.
     c.send(ClientMsg::Queue { mode: 0 }).await;
@@ -340,12 +344,12 @@ async fn a_game_without_custom_rules_is_told_why_it_cant_join_one() {
     let mut rules = fbg_sim::Rules::standard();
     rules.colors = 4;
     let mut host = Client::hello(&url).await;
-    host.send(ClientMsg::Room { code: "FOUR".into(), rules: rules.encode() }).await;
+    host.send(ClientMsg::Room { code: "FOUR".into(), rules: rules.encode(), teams: vec![] }).await;
     assert!(matches!(host.recv().await, Some(ServerMsg::Waiting { .. })));
     let mut old = Client::connect(&url).await;
     old.send(ClientMsg::Hello { protocol: PROTOCOL, engine: RULES_VERSION as u32, tick_hz: TICK_HZ as u32, name: "Old".into(), platform: "test".into(), features: 0, resume: Default::default() }).await;
     assert!(matches!(old.recv().await, Some(ServerMsg::Welcome { .. })));
-    old.send(ClientMsg::Room { code: "FOUR".into(), rules: vec![] }).await;
+    old.send(ClientMsg::Room { code: "FOUR".into(), rules: vec![], teams: vec![] }).await;
     assert!(matches!(old.recv().await, Some(ServerMsg::Notice(t)) if t.contains("custom rules")));
 }
 
@@ -401,9 +405,9 @@ async fn resumable_pair(url: &str, code: &str) -> (Client, Client, u64, fbg_serv
     let mut b = Client::connect(url).await;
     b.send(hello_resuming("Bo", Default::default())).await;
     assert!(matches!(b.recv().await, Some(ServerMsg::Welcome { resumed: 0, .. })));
-    a.send(ClientMsg::Room { code: code.into(), rules: vec![] }).await;
+    a.send(ClientMsg::Room { code: code.into(), rules: vec![], teams: vec![] }).await;
     assert!(matches!(a.recv().await, Some(ServerMsg::Waiting { .. })));
-    b.send(ClientMsg::Room { code: code.into(), rules: vec![] }).await;
+    b.send(ClientMsg::Room { code: code.into(), rules: vec![], teams: vec![] }).await;
     let Some(ServerMsg::Start { match_id, seat: 0, resume, .. }) = a.recv().await else { panic!("no start") };
     let Some(ServerMsg::Start { resume: other, .. }) = b.recv().await else { panic!("no start") };
     assert_ne!(resume, other, "each seat has its own token");
@@ -419,10 +423,10 @@ async fn a_dropped_player_gets_their_seat_back_with_the_token() {
     assert_eq!(b.recv_event().await, Some(ServerMsg::Away { seat: 0, away: true }));
     let mut again = Client::connect(&url).await;
     again.send(hello_resuming("Ann", token)).await;
-    assert_eq!(again.recv().await, Some(ServerMsg::Welcome { features: 3, resumed: mid }));
+    assert_eq!(again.recv().await, Some(ServerMsg::Welcome { features: 7, resumed: mid }));
     assert_eq!(b.recv_event().await, Some(ServerMsg::Away { seat: 0, away: false }));
     // And plays on: its inputs reach the other player as seat 0's.
-    let m = InputMsg { seat: 0, frontier: 30, ack: -1, tick: 6, advantage: 0, changes: vec![(29, 16)].into(), checks: vec![].into() };
+    let m = InputMsg { seat: 0, frontier: 30, ack: -1, tick: 6, advantage: 0, changes: vec![(29, 16)].into(), checks: vec![].into(), acks: List::default() };
     again.send(ClientMsg::Input(m.clone())).await;
     assert_eq!(b.recv().await, Some(ServerMsg::Input(m)));
 }
@@ -434,7 +438,7 @@ async fn a_token_takes_the_seat_from_a_connection_that_never_said_goodbye() {
     let (mut a, mut b, mid, token) = resumable_pair(&url, "SWITCH").await;
     let mut again = Client::connect(&url).await;
     again.send(hello_resuming("Ann", token)).await;
-    assert_eq!(again.recv().await, Some(ServerMsg::Welcome { features: 3, resumed: mid }));
+    assert_eq!(again.recv().await, Some(ServerMsg::Welcome { features: 7, resumed: mid }));
     assert_eq!(a.recv().await, None, "the old connection is let go");
     assert_eq!(b.recv_event().await, Some(ServerMsg::Away { seat: 0, away: false }));
 }
@@ -465,21 +469,149 @@ async fn a_player_who_never_comes_back_loses_and_the_other_is_free_to_go() {
     let (a, mut b, _, _) = resumable_pair(&url, "GONE").await;
     drop(a);
     assert_eq!(b.recv_event().await, Some(ServerMsg::Away { seat: 0, away: true }));
-    let m = InputMsg { seat: 1, frontier: 60, ack: -1, tick: 60, advantage: 0, changes: vec![].into(), checks: vec![].into() };
+    let m = InputMsg { seat: 1, frontier: 60, ack: -1, tick: 60, advantage: 0, changes: vec![].into(), checks: vec![].into(), acks: List::default() };
     b.send(ClientMsg::Input(m)).await;
     // The referee's stall limit is 10 s; it ends the match against whoever is holding it up.
-    let ended = loop {
-        match timeout(Duration::from_secs(15), b.0.next()).await.expect("no ending").and_then(|r| r.ok()) {
-            Some(Message::Binary(bytes)) => match ServerMsg::read(&bytes) {
-                Some(ServerMsg::Input(_)) => continue,
-                other => break other,
-            },
-            Some(_) => continue,
-            None => break None,
+    let wait = async {
+        loop {
+            match b.0.next().await.and_then(|r| r.ok()) {
+                Some(Message::Binary(bytes)) => match ServerMsg::read(&bytes) {
+                    Some(ServerMsg::Input(_)) => continue,
+                    other => return other,
+                },
+                Some(_) => continue,
+                None => return None,
+            }
         }
     };
+    let ended = timeout(Duration::from_secs(15), wait).await.expect("no ending");
     assert!(matches!(ended, Some(ServerMsg::Result { winner: 1, reason: EndReason::Stalled, .. })), "{ended:?}");
     assert_eq!(b.recv().await, Some(ServerMsg::Left { seat: 0 }));
     b.send(ClientMsg::Queue { mode: 0 }).await;
     assert!(matches!(b.recv().await, Some(ServerMsg::Waiting { .. })));
+}
+
+fn hello_with(name: &str, features: u64) -> ClientMsg {
+    ClientMsg::Hello { protocol: PROTOCOL, engine: RULES_VERSION as u32, tick_hz: TICK_HZ as u32, name: name.into(), platform: "test".into(), features, resume: Default::default() }
+}
+
+async fn seated_client(url: &str, name: &str) -> Client {
+    let mut c = Client::connect(url).await;
+    c.send(hello_with(name, fbg_server::protocol::features::SEATS | 1)).await;
+    assert!(matches!(c.recv().await, Some(ServerMsg::Welcome { .. })));
+    c
+}
+
+/// A 2v2 room filled in arrival order: the host's teams, everyone told how full it is.
+async fn room_of_four(url: &str, code: &str) -> (Vec<Client>, u64) {
+    let mut cs = Vec::new();
+    for (k, name) in ["Ann", "Bo", "Cy", "Di"].into_iter().enumerate() {
+        let mut c = seated_client(url, name).await;
+        // Whoever joins later sends no teams: the host's are the room's.
+        let teams = if k == 0 { vec![0, 0, 1, 1] } else { vec![] };
+        c.send(ClientMsg::Room { code: code.into(), rules: vec![], teams }).await;
+        cs.push(c);
+        if k < 3 {
+            for c in cs.iter_mut() {
+                assert_eq!(c.recv().await, Some(ServerMsg::Waiting { room: code.into(), here: k as u8 + 1, seats: 4 }));
+            }
+        }
+    }
+    let mut mid = 0;
+    for (k, c) in cs.iter_mut().enumerate() {
+        let Some(ServerMsg::Start { match_id, seat, seats, .. }) = c.recv().await else { panic!("no start") };
+        assert_eq!(seat as usize, k, "seats go in the order players came");
+        let teams: Vec<u8> = seats.iter().map(|s| s.team).collect();
+        assert_eq!(teams, [0, 0, 1, 1]);
+        assert_eq!(seats[2].name.as_str(), "Cy");
+        mid = match_id;
+    }
+    (cs, mid)
+}
+
+#[tokio::test]
+async fn a_room_of_four_plays_a_2v2_and_every_input_reaches_everyone() {
+    let url = start_server(Config::default()).await;
+    let (mut cs, _) = room_of_four(&url, "QUAD").await;
+    let m = InputMsg { seat: 0, frontier: 30, ack: -1, tick: 6, advantage: 0, changes: vec![(29, 16)].into(), checks: vec![].into(), acks: List::of(&[0, 1, 2, 3]) };
+    cs[2].send(ClientMsg::Input(m.clone())).await;
+    for k in [0, 1, 3] {
+        assert_eq!(cs[k].recv().await, Some(ServerMsg::Input(InputMsg { seat: 2, ..m })), "seat {k}");
+    }
+}
+
+#[tokio::test]
+async fn leaving_a_2v2_loses_it_for_your_team_and_frees_everyone() {
+    let url = start_server(Config::default()).await;
+    let (mut cs, _) = room_of_four(&url, "QUIT").await;
+    drop(cs.remove(3)); // a game that can't resume, so this is leaving
+    for c in cs.iter_mut() {
+        assert!(matches!(c.recv_event().await, Some(ServerMsg::Result { winner: 0, draw: false, reason: EndReason::Left, .. })));
+        assert_eq!(c.recv_event().await, Some(ServerMsg::Left { seat: 3 }));
+    }
+    cs[0].send(ClientMsg::Queue { mode: 0 }).await;
+    assert!(matches!(cs[0].recv().await, Some(ServerMsg::Waiting { .. })), "back in the lobby");
+}
+
+#[tokio::test]
+async fn a_free_for_all_that_loses_a_player_is_a_draw() {
+    let url = start_server(Config::default()).await;
+    let mut cs = Vec::new();
+    for k in 0..3 {
+        let mut c = seated_client(&url, "P").await;
+        c.send(ClientMsg::Room { code: "FFA".into(), rules: vec![], teams: if k == 0 { vec![0, 1, 2] } else { vec![] } }).await;
+        if k < 2 {
+            // In the room before the next arrives: whoever's there first sets the teams.
+            assert!(matches!(c.recv().await, Some(ServerMsg::Waiting { .. })));
+        }
+        cs.push(c);
+    }
+    for c in cs.iter_mut() {
+        while !matches!(c.recv().await, Some(ServerMsg::Start { .. })) {}
+    }
+    drop(cs.remove(0));
+    for c in cs.iter_mut() {
+        assert!(matches!(c.recv_event().await, Some(ServerMsg::Result { draw: true, reason: EndReason::Left, .. })));
+    }
+}
+
+#[tokio::test]
+async fn a_room_waits_for_everyone_and_forgets_whoever_leaves_it() {
+    let url = start_server(Config::default()).await;
+    let mut a = seated_client(&url, "Ann").await;
+    a.send(ClientMsg::Room { code: "WAIT".into(), rules: vec![], teams: vec![0, 1, 2] }).await;
+    assert!(matches!(a.recv().await, Some(ServerMsg::Waiting { here: 1, seats: 3, .. })));
+    let mut b = seated_client(&url, "Bo").await;
+    b.send(ClientMsg::Room { code: "WAIT".into(), rules: vec![], teams: vec![] }).await;
+    assert!(matches!(a.recv().await, Some(ServerMsg::Waiting { here: 2, seats: 3, .. })));
+    assert!(matches!(b.recv().await, Some(ServerMsg::Waiting { here: 2, seats: 3, .. })));
+    drop(a); // the host goes; the room stays, on the host's rules and teams
+    assert!(matches!(b.recv().await, Some(ServerMsg::Waiting { here: 1, seats: 3, .. })));
+    let mut later = Vec::new(); // kept open until the match starts
+    for name in ["Cy", "Di"] {
+        let mut c = seated_client(&url, name).await;
+        c.send(ClientMsg::Room { code: "WAIT".into(), rules: vec![], teams: vec![] }).await;
+        later.push(c);
+    }
+    assert!(matches!(b.recv().await, Some(ServerMsg::Waiting { here: 2, seats: 3, .. })));
+    let Some(ServerMsg::Start { seat: 0, seats, .. }) = b.recv().await else { panic!("no start") };
+    assert_eq!(seats.len(), 3);
+}
+
+#[tokio::test]
+async fn a_game_that_cant_seat_more_than_two_is_kept_out_and_bad_teams_are_refused() {
+    let url = start_server(Config::default()).await;
+    let mut host = seated_client(&url, "Ann").await;
+    host.send(ClientMsg::Room { code: "BIG".into(), rules: vec![], teams: vec![0, 0, 1, 1] }).await;
+    assert!(matches!(host.recv().await, Some(ServerMsg::Waiting { .. })));
+    let mut old = Client::hello(&url).await; // says nothing about seats
+    old.send(ClientMsg::Room { code: "BIG".into(), rules: vec![], teams: vec![] }).await;
+    let Some(ServerMsg::Notice(why)) = old.recv().await else { panic!("no notice") };
+    assert!(why.contains("more than two"), "{why}");
+    for bad in [vec![0, 0], vec![0, 2], vec![0; 9], vec![1, 1, 0, 2, 2, 2, 2, 2, 2]] {
+        let mut c = seated_client(&url, "Eve").await;
+        c.send(ClientMsg::Room { code: "BAD".into(), rules: vec![], teams: bad.clone() }).await;
+        let Some(ServerMsg::Notice(why)) = c.recv().await else { panic!("{bad:?} wasn't refused") };
+        assert!(why.contains("teams"), "{why}");
+    }
 }

@@ -13,7 +13,13 @@ fn input() -> InputMsg {
         advantage: -3,
         changes: List::of(&[(71_990, 16), (71_995, 0), (72_000, 1 << 16 | 3 << 8 | 7 << 12), (72_000, -1)]),
         checks: List::of(&[(71_280, -5_000_000_000_123), (72_000, i64::MIN), (72_000, i64::MAX)]),
+        acks: List::default(),
     }
+}
+
+/// From one of four seats: an ack for each, its own included.
+fn input_of_four() -> InputMsg {
+    InputMsg { seat: 2, acks: List::of(&[71_990, -1, 72_010, i64::MAX]), ..input() }
 }
 
 fn clients() -> Vec<ClientMsg> {
@@ -22,9 +28,11 @@ fn clients() -> Vec<ClientMsg> {
         ClientMsg::Hello { protocol: 0, engine: 0, tick_hz: 0, name: "".into(), platform: "".into(), features: 0, resume: Token::default() },
         ClientMsg::Queue { mode: 0 },
         ClientMsg::Queue { mode: 7 },
-        ClientMsg::Room { code: "KXQT".into(), rules: vec![] },
-        ClientMsg::Room { code: "A1".into(), rules: vec![0, 1, 2, 255] },
+        ClientMsg::Room { code: "KXQT".into(), rules: vec![], teams: vec![] },
+        ClientMsg::Room { code: "A1".into(), rules: vec![0, 1, 2, 255], teams: vec![0, 0, 1, 1] },
+        ClientMsg::Room { code: "A2".into(), rules: vec![], teams: vec![0; MAX_SEATS] },
         ClientMsg::Input(input()),
+        ClientMsg::Input(input_of_four()),
         ClientMsg::Input(InputMsg::default()),
         ClientMsg::Rematch,
         ClientMsg::Ping(u64::MAX),
@@ -39,11 +47,13 @@ fn servers() -> Vec<ServerMsg> {
         ServerMsg::Welcome { features: 0, resumed: 0 },
         ServerMsg::Welcome { features: 3, resumed: 41 },
         ServerMsg::Refused { code: Refusal::Update, text: "Please update.".into() },
-        ServerMsg::Waiting { room: "".into() },
-        ServerMsg::Waiting { room: "KXQT".into() },
+        ServerMsg::Waiting { room: "".into(), here: 1, seats: 2 },
+        ServerMsg::Waiting { room: "KXQT".into(), here: 3, seats: 6 },
+        ServerMsg::Waiting { room: "".into(), here: 0, seats: 0 },
         ServerMsg::Start { match_id: 1, seed: -42, seat: 1, rules: vec![9; 300], seats, resume: [255; RESUME] },
         ServerMsg::Start { match_id: 0, seed: 0, seat: 0, rules: vec![], seats: List::default(), resume: Token::default() },
         ServerMsg::Input(input()),
+        ServerMsg::Input(input_of_four()),
         ServerMsg::Result { winner: 1, draw: false, reason: EndReason::Stalled, tick: 9000 },
         ServerMsg::Result { winner: 0, draw: true, reason: EndReason::Played, tick: 0 },
         ServerMsg::Pong(12345),
@@ -66,8 +76,8 @@ fn every_message_survives_the_trip() {
 
 #[test]
 fn room_codes_ignore_case() {
-    let m = ClientMsg::Room { code: "kxqt".into(), rules: vec![] };
-    assert_eq!(ClientMsg::decode(&m.encode()), Ok(Decoded::Msg(ClientMsg::Room { code: "KXQT".into(), rules: vec![] })));
+    let m = ClientMsg::Room { code: "kxqt".into(), rules: vec![], teams: vec![] };
+    assert_eq!(ClientMsg::decode(&m.encode()), Ok(Decoded::Msg(ClientMsg::Room { code: "KXQT".into(), rules: vec![], teams: vec![] })));
 }
 
 /// What lets the protocol grow: a newer sender's extra fields and messages are skipped.
@@ -208,7 +218,7 @@ fn varints_and_zigzag() {
 /// What players send 60 times a second: a typical input is a third of protocol 2's 47 bytes.
 #[test]
 fn inputs_are_small() {
-    let typical = InputMsg { seat: 0, frontier: 43_211, ack: 43_150, tick: 43_220, advantage: 2, changes: List::of(&[(43_205, 16)]), checks: List::default() };
+    let typical = InputMsg { seat: 0, frontier: 43_211, ack: 43_150, tick: 43_220, advantage: 2, changes: List::of(&[(43_205, 16)]), ..Default::default() };
     let n = ClientMsg::Input(typical).encode().len();
     assert!(n <= 17, "{n} bytes");
     let idle = InputMsg { frontier: 43_211, ack: 43_150, tick: 43_220, ..Default::default() };
@@ -223,7 +233,8 @@ fn known_bytes() {
     assert_eq!(ClientMsg::Rematch.encode(), [5]);
     assert_eq!(ClientMsg::Queue { mode: 0 }.encode(), [2]);
     assert_eq!(ClientMsg::Ping(300).encode(), [6, 0x08, 0xac, 0x02]);
-    assert_eq!(ClientMsg::Room { code: "AB".into(), rules: vec![] }.encode(), [3, 0x0a, 2, b'A', b'B']);
+    assert_eq!(ClientMsg::Room { code: "AB".into(), rules: vec![], teams: vec![] }.encode(), [3, 0x0a, 2, b'A', b'B']);
+    assert_eq!(ClientMsg::Room { code: "AB".into(), rules: vec![], teams: vec![0, 1, 2] }.encode(), [3, 0x0a, 2, b'A', b'B', 0x1a, 3, 0, 1, 2]);
     assert_eq!(ServerMsg::Left { seat: 1 }.encode(), [23, 0x08, 1]);
     let m = InputMsg { frontier: 10, ack: -1, tick: 10, changes: List::of(&[(8, 16), (10, 0)]), ..Default::default() };
     // frontier 10 -> zigzag 20; ack -1 is 11 before it -> 21; tick is the frontier, so it's
@@ -248,4 +259,17 @@ fn no_token_costs_no_bytes() {
     let plain = ClientMsg::Hello { protocol: PROTOCOL, engine: 1, tick_hz: 720, name: "A".into(), platform: "x".into(), features: 0, resume: Token::default() };
     let with = ClientMsg::Hello { protocol: PROTOCOL, engine: 1, tick_hz: 720, name: "A".into(), platform: "x".into(), features: 0, resume: [3; RESUME] };
     assert_eq!(with.encode().len(), plain.encode().len() + 2 + RESUME);
+}
+
+#[test]
+fn too_many_seats_is_damage() {
+    let mut out = vec![3];
+    let mut w = Writer { out: &mut out };
+    w.bytes(1, b"AB");
+    w.bytes(3, &[0; MAX_SEATS + 1]);
+    assert_eq!(ClientMsg::decode(&out), Err(Damaged));
+    let mut out = vec![4];
+    let mut w = Writer { out: &mut out };
+    w.packed(10, (0..=MAX_SEATS as u64).map(|_| 0));
+    assert_eq!(ClientMsg::decode(&out), Err(Damaged));
 }

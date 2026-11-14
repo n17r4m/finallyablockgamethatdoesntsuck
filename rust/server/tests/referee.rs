@@ -16,7 +16,7 @@ fn corpus(name: &str) -> Replay {
 }
 
 fn msg(frontier: i64, changes: Vec<(i64, i32)>, checks: Vec<(i64, i64)>) -> InputMsg {
-    InputMsg { seat: 0, frontier, ack: -1, tick: frontier, advantage: 0, changes: List::of(&changes), checks: List::of(&checks) }
+    InputMsg { seat: 0, frontier, ack: -1, tick: frontier, advantage: 0, changes: List::of(&changes), checks: List::of(&checks), acks: List::default() }
 }
 
 /// Plays a recorded game through the referee in one-second batches, both players honest.

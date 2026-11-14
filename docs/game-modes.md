@@ -1,7 +1,7 @@
 # Game modes
 
 Where the game is going past 1v1, and the order it gets built in. Decided 2026-11-10.
-Step 0 is built; step 1 is under way.
+Steps 0 to 4 are built; step 5, the lobby and ruleset editor, is next, then Rumble.
 
 ## The layers
 
@@ -66,7 +66,8 @@ inputs plus an incoming garbage stream, which coupled modes feed from inside the
    carry it, then a Rules page.
 2. **N boards, teams and routing** in the sim. The P1/P2 mirror fuzz widens to every seat order.
 3. **N-seat `RollbackSession`**, including several local seats on one device.
-4. **Server rooms** with a host, seats, teams and a validated ruleset.
+4. **Server rooms** with a host, seats, teams and a validated ruleset. Built 2026-11-13: the
+   host picks the format, friends join by code, seats fill in arrival order.
 5. **Lobby and ruleset editor**, and a match layout for N boards.
 
 Then Rumble (variable width), modes and queues, accounts and ranks, battle royale.

@@ -15,6 +15,7 @@ var _quick: Button
 var _cpu: OptionButton
 var _level: OptionButton
 var _format: OptionButton
+var _room_format: OptionButton
 var _blurb: Label
 var _columns: BoxContainer
 var _online: VBoxContainer
@@ -67,6 +68,19 @@ func _ready() -> void:
 	_room.size_flags_horizontal = SIZE_EXPAND_FILL
 	_room.text_submitted.connect(func(_t: String) -> void: _play_room())
 	_button(room_row, "Play a friend", _play_room).tooltip_text = "Leave the code empty to make a room and copy an invite link"
+	# What a room you make is for. Whoever joins plays the room's format, whatever theirs says.
+	_room_format = OptionButton.new()
+	Controls.size_for_fingers(_room_format)
+	_room_format.tooltip_text = "Making a room: how many play, on which teams. Joining one: its maker's choice counts"
+	for f: String in Net.FORMATS:
+		var seats: int = Net.FORMATS[f].size()
+		_room_format.add_item("Room for %s: %s" % [f, "you and a friend" if seats == 2 else "%d players" % seats])
+	_room_format.select(maxi(0, Net.FORMATS.values().find(Array(Net.room_teams))))
+	_room_format.item_selected.connect(func(i: int) -> void:
+		Net.room_teams = PackedInt32Array(Net.FORMATS.values()[i]) if i > 0 else PackedInt32Array())
+	_room_format.clip_text = true
+	_room_format.size_flags_horizontal = SIZE_EXPAND_FILL
+	_online.add_child(_room_format)
 	# The same room, on a LAN, without a server.
 	_address = _field(_online, "LAN host address", Config.get_value("net", "address"))
 	var lan_row := HBoxContainer.new()
@@ -261,7 +275,7 @@ func _play_room() -> void:
 		if link != "":
 			DisplayServer.clipboard_set(link)
 	_room.text = code
-	Net.play_online(code)
+	Net.play_online(code, null, Net.room_teams)
 
 
 func _host() -> void:

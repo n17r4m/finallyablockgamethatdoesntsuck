@@ -7,21 +7,26 @@ extends SceneTree
 ## --custom plays a room on custom rules from its host: six colours and quicker everything.
 ## --drop plays player 0 through Net, as the game does, and cuts its connection halfway: it
 ## must get its seat back and play the match out with no desync.
+## --format=2v2 (or 3-way, 3v3, any of Net.FORMATS) fills a room with that many players.
 
 const TPF := SimConst.TICKS_PER_FRAME
 
 var _url := "ws://127.0.0.1:47110"
 var _seconds := 20
 var _links: Array[ServerLink] = []
-var _sessions: Array[RollbackSession] = [null, null]
-var _cpus: Array[CpuPlayer] = [null, null]
+var _teams := PackedInt32Array() # the room's; empty for a 1v1
+var _n := 2 # players
+var _format := "" # a key of Net.FORMATS, read once the autoloads are up
+var _sessions: Array[RollbackSession] = []
+var _cpus: Array[CpuPlayer] = []
 var _desyncs := 0
 var _results: Array = []
 var _acc := 0 # tick-units * 1e6, as in scenes/match.gd
 var _bad_link := false
 var _custom: SimRules = null
-var _inbox: Array = [[], []] # [arrival msec, packet], in order
-var _blocked_until := [0, 0]
+var _inbox: Array = [] # per link: [arrival msec, packet], in order
+var _blocked_until: Array = []
+var _seat_of: Array = [] # per link
 var _rng := RandomNumberGenerator.new()
 var _last_usec := 0
 var _began := 0
@@ -45,6 +50,8 @@ func _init() -> void:
 			_bad_link = true
 		elif a == "--drop":
 			_drop = true
+		elif a.begins_with("--format="):
+			_format = a.trim_prefix("--format=")
 		elif a == "--custom":
 			_custom = SimRules.standard()
 			_custom.colors = 6
@@ -56,6 +63,15 @@ func _init() -> void:
 
 
 func _setup() -> void:
+	if _format != "":
+		_teams = PackedInt32Array(root.get_node("Net").FORMATS[_format])
+		_n = _teams.size()
+	for c in _n:
+		_sessions.append(null)
+		_cpus.append(null)
+		_inbox.append([])
+		_blocked_until.append(0)
+		_seat_of.append(-1)
 	var code := "T%d" % (randi() % 1000000)
 	if _drop:
 		_net = root.get_node("Net")
@@ -66,7 +82,7 @@ func _setup() -> void:
 		_net.match_started.connect(func() -> void:
 			_on_started(0, _net.match_seed, _net.local_idx, 0))
 		_net.packet.connect(_on_input.bind(0))
-	for c in range(1 if _drop else 0, 2):
+	for c in range(1 if _drop else 0, _n):
 		var link := ServerLink.new()
 		link.player_name = "Tester %d" % c
 		if link.open(_url) != OK:
@@ -78,10 +94,11 @@ func _setup() -> void:
 		link.started.connect(_on_started.bind(c))
 		link.finished.connect(func(w: int, r: int, t: int) -> void: _results.append([w, r, t]))
 		link.input.connect(_on_input.bind(c))
-		link.opponent_away.connect(func(away: bool) -> void: _away.append(away))
+		if c == 1:
+			link.opponent_away.connect(func(_seat: int, away: bool) -> void: _away.append(away))
 		_links.append(link)
 	if _drop:
-		_net.connect_server(_url, code)
+		_net.connect_server(_url, code, null, _teams)
 	_began = Time.get_ticks_msec()
 
 
@@ -102,7 +119,7 @@ func _finish() -> void:
 
 func _on_welcomed(_resumed: int, c: int, code: String) -> void:
 	# Whoever gets there first hosts, and the host's rules are the room's: a joiner's are ignored.
-	_links[c].room(code, _custom)
+	_links[c].room(code, _custom, _teams)
 
 
 ## Everything here is indexed by link. Which seat a link gets is up to the server.
@@ -110,7 +127,14 @@ func _on_started(_id: int, game_seed: int, seat: int, c: int) -> void:
 	var got: SimRules = _net.match_rules if _drop and c == 0 else _links[c].rules
 	if (got == null) != (_custom == null) or (got and got.encode() != _custom.encode()):
 		_fail("link %d started on the wrong rules" % c)
-	var s := RollbackSession.new(game_seed, seat, 2 * TPF, false, false, "auto" if seat == 0 else "gdscript", got)
+	var teams: PackedInt32Array = _net.match_teams if _drop and c == 0 else _links[c].teams
+	if teams.is_empty():
+		teams = PackedInt32Array([0, 1]) # Net's way of saying 1v1
+	if teams.size() != _n or (not _teams.is_empty() and teams != _teams):
+		_fail("link %d started with teams %s" % [c, teams])
+	_seat_of[c] = seat
+	# Even seats on Rust, odd on GDScript, so both engines play every format.
+	var s := RollbackSession.new(game_seed, seat, 2 * TPF, false, false, "auto" if seat % 2 == 0 else "gdscript", got, _teams)
 	_sessions[c] = s
 	_cpus[c] = CpuPlayer.opponent("Overmind", "hard", game_seed + seat)
 	s.desynced.connect(func(_t: int) -> void: _desyncs += 1)
@@ -128,7 +152,7 @@ func _process(_delta: float) -> bool:
 	for link in _links:
 		if link:
 			link.poll()
-	if _sessions[0] == null or _sessions[1] == null:
+	if _sessions.has(null):
 		if Time.get_ticks_msec() - _began > 5000:
 			_fail("no match within 5 s: is fbg-server running at %s?" % _url)
 			_finish()
@@ -138,7 +162,7 @@ func _process(_delta: float) -> bool:
 	_last_usec = now
 	var due := mini(_acc / 1000000, SimConst.TICK_HZ / 10)
 	_acc = mini(_acc - due * 1000000, 1000000)
-	for c in 2:
+	for c in _n:
 		_deliver(c)
 		var s := _sessions[c]
 		if s.input_open():
@@ -164,8 +188,6 @@ func _deliver(c: int) -> void:
 
 
 func _check() -> void:
-	var a := _sessions[0]
-	var b := _sessions[1]
 	if _drop:
 		_links[0] = _net._link
 		if _links[0] == null:
@@ -174,25 +196,38 @@ func _check() -> void:
 		if not "Reconnected" in _said or _away != [true, false]:
 			_fail("the drop wasn't seen through: Net said %s, the other player heard %s" % [_said, _away])
 		print("  ok   dropped and got back in: %s" % [_said])
-	for c in 2:
+	for c in _n:
 		if _drop:
 			break # Net's player goes by the settings' name
-		if _links[c].opponent_name != "Tester %d" % (1 - c):
+		var names: Array = _links[c].seats.map(func(x: Dictionary) -> String: return x.name)
+		names.sort()
+		var want: Array = range(_n).map(func(k: int) -> String: return "Tester %d" % k)
+		if names != want:
+			_fail("link %d was told the players are %s" % [c, names])
+		if _n == 2 and _links[c].opponent_name != "Tester %d" % (1 - c):
 			_fail("link %d was told its opponent is %s" % [c, _links[c].opponent_name])
-	if (a.state is RustState) == (b.state is RustState):
-		_fail("this test wants one Rust player and one GDScript player")
+	var seats_taken := _seat_of.duplicate()
+	seats_taken.sort()
+	if seats_taken != range(_n):
+		_fail("seats given out: %s" % [_seat_of])
+	if not _sessions.any(func(s: RollbackSession) -> bool: return s.state is RustState) \
+			or _sessions.all(func(s: RollbackSession) -> bool: return s.state is RustState):
+		_fail("this test wants Rust players and GDScript players")
 	if _desyncs != 0:
 		_fail("%d desyncs" % _desyncs)
-	if a.check_log.size() < 10 or b.check_log.size() < 10:
-		_fail("too few agreed checkpoints: %d and %d" % [a.check_log.size(), b.check_log.size()])
+	for s in _sessions:
+		if s.check_log.size() < 10:
+			_fail("too few agreed checkpoints: %d" % s.check_log.size())
 	for r: Array in _results:
 		if r[1] != ServerLink.PLAYED:
 			_fail("the server ended the match: winner %d, reason %d, tick %d" % r)
-	for s: RollbackSession in [a, b]:
+	for s: RollbackSession in _sessions:
 		var saved := Replay.from_session(s)
 		if saved == null or Replay.decode(saved.encode()).verify() != "":
 			_fail("a saved replay doesn't verify")
-	print("  ok   %d s on the server: ticks %d and %d, rollbacks %d and %d, no desync" % [_seconds, a.state.tick, b.state.tick, a.stats.rollbacks, b.stats.rollbacks])
+	print("  ok   %d s on the server, %d players: ticks %s, rollbacks %s, no desync" % [_seconds, _n,
+			_sessions.map(func(s: RollbackSession) -> int: return s.state.tick),
+			_sessions.map(func(s: RollbackSession) -> int: return s.stats.rollbacks)])
 
 
 ## The protocol's bytes are fbg-proto's, tested in Rust. This holds the bridge to them:
@@ -254,3 +289,31 @@ func _test_codec() -> void:
 	link.decode(wire.server_bytes({"type": "notice", "text": "hi"}))
 	if notices != ["hi"]:
 		_fail("notices decoded wrong: %s" % [notices])
+
+	# More than two seats: each seat's ack rides along, the start gives the teams, and the
+	# room says how full it is.
+	got.clear()
+	var four := {"f": 9, "a": -1, "s": 4, "v": 0, "t": PackedInt64Array(), "m": PackedInt32Array(), "c": {},
+			"acks": PackedInt64Array([3, -1, 7, 1 << 40])}
+	link.decode(wire.server_bytes(four.merged({"type": "input", "seat": 3})))
+	if got.size() != 1 or got[0] != four.merged({"seat": 3}):
+		_fail("an input with acks decoded wrong: %s" % [got])
+	if wire.input(four).slice(1) != wire.server_bytes(four.merged({"type": "input"})).slice(1):
+		_fail("acks are sent differently from how they're relayed")
+	got.clear()
+	var quad := [{"name": "A", "team": 0, "platform": "x"}, {"name": "B", "team": 0, "platform": "x"},
+			{"name": "C", "team": 1, "platform": "x"}, {"name": "D", "team": 1, "platform": "x"}]
+	link.decode(wire.server_bytes({"type": "start", "match_id": 9, "seed": 5, "seat": 2, "seats": quad}))
+	if got != [[9, 5, 2]] or link.teams != PackedInt32Array([0, 0, 1, 1]) or link.opponent_name != "":
+		_fail("a 2v2 start decoded wrong: %s, %s, %s" % [got, link.teams, link.opponent_name])
+	var heard: Array = []
+	link.waiting.connect(func(here: int, n: int) -> void: heard.append([here, n]))
+	link.opponent_left.connect(func(seat: int) -> void: heard.append(["left", seat]))
+	link.opponent_away.connect(func(seat: int, away: bool) -> void: heard.append(["away", seat, away]))
+	link.decode(wire.server_bytes({"type": "waiting", "room": "AB", "here": 3, "seats": 4}))
+	link.decode(wire.server_bytes({"type": "away", "seat": 3, "away": true}))
+	link.decode(wire.server_bytes({"type": "left", "seat": 2}))
+	if heard != [[3, 4], ["away", 3, true], ["left", 2]]:
+		_fail("room, away and left decoded wrong: %s" % [heard])
+	if wire.room("AB", PackedByteArray(), PackedByteArray([0, 1, 2])) != PackedByteArray([3, 0x0a, 2, 65, 66, 0x1a, 3, 0, 1, 2]):
+		_fail("a room with teams isn't the bytes the Rust tests know")

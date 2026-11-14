@@ -35,13 +35,17 @@ impl Client {
     }
 
     async fn recv(&mut self) -> Option<ServerMsg> {
-        loop {
-            match timeout(WAIT, self.0.next()).await.expect("the server went quiet") {
-                Some(Ok(Message::Binary(b))) => return Some(ServerMsg::read(&b).expect("the server sent junk")),
-                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return None,
-                Some(Ok(_)) => {}
+        // One deadline for the lot: the server's pings every 2 s mustn't keep a wait alive.
+        let next = async {
+            loop {
+                match self.0.next().await {
+                    Some(Ok(Message::Binary(b))) => return Some(ServerMsg::read(&b).expect("the server sent junk")),
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return None,
+                    Some(Ok(_)) => {}
+                }
             }
-        }
+        };
+        timeout(WAIT, next).await.expect("the server went quiet")
     }
 
     async fn recv_event(&mut self) -> Option<ServerMsg> {
@@ -85,9 +89,9 @@ impl Server {
     /// Two named players in a match by way of a room.
     async fn pair(&self, a: &str, b: &str) -> (Client, Client, u64) {
         let (mut ca, mut cb) = (Client::hello(&self.url, a).await, Client::hello(&self.url, b).await);
-        ca.send(ClientMsg::Room { code: "ADMIN".into(), rules: vec![] }).await;
+        ca.send(ClientMsg::Room { code: "ADMIN".into(), rules: vec![], teams: vec![] }).await;
         assert!(matches!(ca.recv().await, Some(ServerMsg::Waiting { .. })));
-        cb.send(ClientMsg::Room { code: "ADMIN".into(), rules: vec![] }).await;
+        cb.send(ClientMsg::Room { code: "ADMIN".into(), rules: vec![], teams: vec![] }).await;
         let Some(ServerMsg::Start { match_id, seats, seat: 0, .. }) = ca.recv().await else { panic!("no start") };
         assert_eq!((seats[0].name.as_str(), seats[1].name.as_str()), (a, b));
         let Some(ServerMsg::Start { seats, seat: 1, .. }) = cb.recv().await else { panic!("no start") };
@@ -228,6 +232,8 @@ async fn the_store_keeps_matches_and_numbering_across_a_restart() {
     let rows = store::history(&db, 10).unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[1].names, [Some("Ann".into()), Some("Bob".into())]);
+    assert_eq!(rows[1].teams, [0, 1]);
+    assert_eq!(rows[1].late.len(), 2);
     assert_eq!(rows[1].reason.as_deref(), Some("ended"));
     assert_eq!(rows[1].winner, Some(2));
     assert_eq!(rows[0].reason, None, "still playing");
@@ -281,4 +287,32 @@ async fn with_a_password_the_console_asks_for_it_from_anywhere() {
     assert_eq!(http(&addr, get("")).await, 401);
     assert_eq!(http(&addr, get(&basic("hunter3"))).await, 401);
     assert_eq!(http(&addr, get(&basic("hunter2"))).await, 200);
+}
+
+/// A database from before matches had more than two seats: its matches read the same.
+#[test]
+fn matches_from_before_the_seats_table_keep_their_players() {
+    let db = temp_db("old");
+    {
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.execute_batch(
+            "CREATE TABLE matches (id INTEGER PRIMARY KEY, started INTEGER NOT NULL, ended INTEGER, seed INTEGER NOT NULL,
+                name0 TEXT, name1 TEXT, addr0 TEXT, addr1 TEXT, platform0 TEXT, platform1 TEXT,
+                winner INTEGER, reason TEXT, end_tick INTEGER, late0 INTEGER, late1 INTEGER, replay TEXT);
+             INSERT INTO matches VALUES (7, 100, 160, 42, 'Ann', 'Bob', '1.2.3.4', '5.6.7.8', 'web', 'linux', 1, 'played', 43200, 12, 30, NULL);",
+        )
+        .unwrap();
+    }
+    let (store, loaded) = Store::open(&db).unwrap();
+    assert_eq!(loaded.next_match, 8);
+    drop(store);
+    let rows = store::history(&db, 10).unwrap();
+    assert_eq!(rows[0].names, [Some("Ann".into()), Some("Bob".into())]);
+    assert_eq!(rows[0].teams, [0, 1]);
+    assert_eq!(rows[0].late, [Some(12), Some(30)]);
+    assert_eq!(store::stats(&db, 0).unwrap().players, 2);
+    // Opening it again adds nothing twice.
+    drop(Store::open(&db).unwrap());
+    assert_eq!(store::history(&db, 10).unwrap()[0].names.len(), 2);
+    let _ = std::fs::remove_file(&db);
 }

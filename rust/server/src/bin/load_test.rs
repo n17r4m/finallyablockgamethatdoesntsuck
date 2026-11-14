@@ -20,7 +20,7 @@ async fn play(url: String, room: String, seat: usize, replay: Arc<Replay>, secon
     let (mut tx, mut rx) = socket.split();
     let hello = ClientMsg::Hello { protocol: PROTOCOL, engine: RULES_VERSION as u32, tick_hz: TICK_HZ as u32, name: "load".into(), platform: "load_test".into(), features: 0, resume: Default::default() };
     let _ = tx.send(Message::binary(hello.encode())).await;
-    let _ = tx.send(Message::binary(ClientMsg::Room { code: room.as_str().into(), rules: vec![] }.encode())).await;
+    let _ = tx.send(Message::binary(ClientMsg::Room { code: room.as_str().into(), rules: vec![], teams: vec![] }.encode())).await;
     // Waits for the start, then listens while it plays.
     loop {
         let Some(Ok(Message::Binary(b))) = rx.next().await else { return };

@@ -29,7 +29,7 @@ const OUTGOING_QUEUE: usize = 512;
 /// The biggest a frame can be: a room with the largest ruleset there is. Inputs are far smaller.
 const MAX_FRAME: usize = MAX_RULES + 64;
 /// What this server can do beyond protocol 3's core.
-const FEATURES: u64 = features::CUSTOM_RULES | features::RESUME;
+const FEATURES: u64 = features::CUSTOM_RULES | features::RESUME | features::SEATS;
 
 const OUTDATED: &str = "This game is out of date. Reload the page, or update it.";
 const DRAINING: &str = "The server is restarting for an update. Try again in a minute.";
@@ -103,15 +103,16 @@ pub struct ConnInfo {
 pub struct MatchInfo {
     pub id: u64,
     pub seed: i64,
-    pub conns: [u64; 2],
-    pub names: [String; 2],
+    pub conns: Vec<u64>,
+    pub names: Vec<String>,
+    pub teams: Vec<u8>,
     pub age_s: u64,
     pub clock: i64,     // the server's tick
     pub refereed: i64,  // how far the referee has played
     pub frontiers: Vec<i64>,
     pub late: Vec<i64>, // worst input lateness, ticks
     pub over: Option<String>,
-    pub away: [bool; 2], // connection dropped; the seat is held for its token
+    pub away: Vec<bool>, // connection dropped; the seat is held for its token
 }
 
 /// One match's boards as the referee has them, for watching from the console.
@@ -119,7 +120,8 @@ pub struct MatchInfo {
 pub struct Watch {
     pub id: u64,
     pub tick: i64,
-    pub names: [String; 2],
+    pub names: Vec<String>,
+    pub teams: Vec<u8>,
     pub over: Option<String>,
     pub boards: Vec<BoardView>,
 }
@@ -168,26 +170,41 @@ struct Conn {
     rtt_ms: Option<u32>,
 }
 
-/// Someone waiting for a friend with the same code, and the rules the match will have.
+/// Players waiting for friends with the same code, and the match they'll have. The first
+/// to arrive set its rules and teams; seats are taken in the order players arrive.
 struct Room {
-    host: u64,
+    members: Vec<u64>,
     rules: Arc<Rules>,
     bytes: Vec<u8>, // as the host sent them; empty for standard
+    teams: Vec<u8>,
 }
 
+/// Everything per seat is indexed by seat.
 struct Match {
-    conns: [u64; 2],
+    conns: Vec<u64>,
     rules: Arc<Rules>,
     rules_bytes: Vec<u8>,
-    names: [String; 2],
+    teams: Vec<u8>,
+    names: Vec<String>,
     seed: i64,
     referee: Referee,
     started: Instant,
-    rematch: [bool; 2],
+    rematch: Vec<bool>,
     announced: bool,
     /// Each seat's resume token, and whether its connection has dropped, since when.
-    tokens: [Token; 2],
-    away: [Option<Instant>; 2],
+    tokens: Vec<Token>,
+    away: Vec<Option<Instant>>,
+}
+
+impl Match {
+    fn seat(&self, id: u64) -> Option<usize> {
+        self.conns.iter().position(|&c| c == id)
+    }
+
+    /// Everyone's connection but this seat's.
+    fn others(&self, seat: usize) -> Vec<u64> {
+        self.conns.iter().enumerate().filter(|&(k, _)| k != seat).map(|(_, &c)| c).collect()
+    }
 }
 
 struct Hub {
@@ -383,12 +400,27 @@ pub fn name_of(reason: EndReason) -> &'static str {
     }
 }
 
-fn describe(o: &Outcome) -> String {
-    let who = match o.winner {
-        0 | 1 => format!("seat {} won", o.winner),
-        _ => "draw".into(),
+fn describe(o: &Outcome, teams: &[u8]) -> String {
+    let count = teams.iter().max().map_or(0, |t| t + 1);
+    let who = if o.winner >= count {
+        "draw".into()
+    } else if teams.len() == 2 {
+        format!("seat {} won", o.winner)
+    } else {
+        format!("team {} won", o.winner + 1)
     };
     format!("{who}, {}", name_of(o.reason))
+}
+
+/// Why a room's teams can't be played, if they can't. None: a 1v1.
+fn room_teams(teams: &[u8]) -> Result<Vec<u8>, String> {
+    if teams.is_empty() {
+        return Ok(vec![0, 1]);
+    }
+    match fbg_sim::state::teams_error(teams) {
+        Some(why) => Err(why),
+        None => Ok(teams.to_vec()),
+    }
 }
 
 impl Hub {
@@ -493,15 +525,15 @@ impl Hub {
                     return;
                 }
                 match self.queue.take() {
-                    Some(other) if other != id => self.start_match([other, id], Rules::shared_standard(), Vec::new()),
+                    Some(other) if other != id => self.start_match(vec![other, id], Rules::shared_standard(), Vec::new(), vec![0, 1]),
                     _ => {
                         self.queue = Some(id);
                         self.set_place(id, Place::Waiting);
-                        self.send(id, &ServerMsg::Waiting { room: Text::default() });
+                        self.send(id, &ServerMsg::Waiting { room: Text::default(), here: 1, seats: 2 });
                     }
                 }
             }
-            ClientMsg::Room { code, rules } if *place == Place::Lobby => self.on_room(id, code, rules),
+            ClientMsg::Room { code, rules, teams } if *place == Place::Lobby => self.on_room(id, code, rules, teams),
             // A player can still have these in flight when an opponent leaves and sends them
             // back to the lobby, so outside a match they're ignored rather than punished.
             ClientMsg::Input(m) if *place != Place::New => {
@@ -519,23 +551,40 @@ impl Hub {
         }
     }
 
-    fn on_room(&mut self, id: u64, code: Text<{ crate::protocol::MAX_ROOM }>, bytes: Vec<u8>) {
+    fn on_room(&mut self, id: u64, code: Text<{ crate::protocol::MAX_ROOM }>, bytes: Vec<u8>, teams: Vec<u8>) {
         let key = code.to_string();
+        let can = |f: u64| self.conns.get(&id).is_some_and(|c| c.features & f != 0);
         if let Some(room) = self.rooms.get(&key) {
-            if room.host == id {
+            if room.members.contains(&id) {
                 return;
             }
-            // The host's rules are the room's; whoever joins only brings themselves.
-            let custom = !room.bytes.is_empty();
-            let can = self.conns.get(&id).is_some_and(|c| c.features & features::CUSTOM_RULES != 0);
-            if custom && !can {
+            // The host's rules and teams are the room's; whoever joins only brings themselves.
+            if !room.bytes.is_empty() && !can(features::CUSTOM_RULES) {
                 self.send(id, &ServerMsg::Notice("That room plays custom rules, which this game can't. Please update.".into()));
                 return;
             }
-            let room = self.rooms.remove(&key).unwrap();
-            self.start_match([room.host, id], room.rules, room.bytes);
+            if room.teams.len() > 2 && !can(features::SEATS) {
+                self.send(id, &ServerMsg::Notice("That room is for more than two players, which this game can't do. Please update.".into()));
+                return;
+            }
+            let room = self.rooms.get_mut(&key).unwrap();
+            room.members.push(id);
+            if room.members.len() == room.teams.len() {
+                let room = self.rooms.remove(&key).unwrap();
+                self.start_match(room.members, room.rules, room.bytes, room.teams);
+            } else {
+                self.set_place(id, Place::Waiting);
+                self.tell_room(&key);
+            }
             return;
         }
+        let teams = match room_teams(&teams) {
+            Ok(t) => t,
+            Err(why) => {
+                self.send(id, &ServerMsg::Notice(format!("Those teams can't be played: {why}.")));
+                return;
+            }
+        };
         let rules = if bytes.is_empty() {
             Rules::shared_standard()
         } else {
@@ -549,9 +598,33 @@ impl Hub {
             }
         };
         let bytes = if Arc::ptr_eq(&rules, &Rules::shared_standard()) { Vec::new() } else { bytes };
-        self.rooms.insert(key.clone(), Room { host: id, rules, bytes });
+        self.rooms.insert(key.clone(), Room { members: vec![id], rules, bytes, teams });
         self.set_place(id, Place::Waiting);
-        self.send(id, &ServerMsg::Waiting { room: code });
+        self.tell_room(&key);
+    }
+
+    /// Everyone in the room hears how full it is.
+    fn tell_room(&mut self, key: &str) {
+        let Some(room) = self.rooms.get(key) else { return };
+        let msg = ServerMsg::Waiting { room: Text::new(key), here: room.members.len() as u8, seats: room.teams.len() as u8 };
+        for id in room.members.clone() {
+            self.send(id, &msg);
+        }
+    }
+
+    /// Takes a waiting player out of the queue or their room, leaving the connection.
+    fn drop_waiting(&mut self, id: u64) {
+        if self.queue == Some(id) {
+            self.queue = None;
+        }
+        let Some(key) = self.rooms.iter().find(|(_, r)| r.members.contains(&id)).map(|(k, _)| k.clone()) else { return };
+        let room = self.rooms.get_mut(&key).unwrap();
+        room.members.retain(|&m| m != id);
+        if room.members.is_empty() {
+            self.rooms.remove(&key);
+        } else {
+            self.tell_room(&key);
+        }
     }
 
     fn set_place(&mut self, id: u64, place: Place) {
@@ -563,45 +636,47 @@ impl Hub {
         }
     }
 
-    fn seat_of(&self, id: u64) -> Seat {
+    fn seat_of(&self, id: u64, team: u8) -> Seat {
         match self.conns.get(&id) {
-            Some(c) => Seat { name: c.name.clone(), addr: c.addr.to_string(), platform: c.platform.clone() },
-            None => Seat { name: String::new(), addr: String::new(), platform: String::new() },
+            Some(c) => Seat { name: c.name.clone(), addr: c.addr.to_string(), platform: c.platform.clone(), team },
+            None => Seat { name: String::new(), addr: String::new(), platform: String::new(), team },
         }
     }
 
-    fn start_match(&mut self, conns: [u64; 2], rules: Arc<Rules>, rules_bytes: Vec<u8>) {
+    fn start_match(&mut self, conns: Vec<u64>, rules: Arc<Rules>, rules_bytes: Vec<u8>, teams: Vec<u8>) {
         let match_id = self.next_match;
         self.next_match += 1;
         let seed = new_seed();
-        let seats = conns.map(|id| self.seat_of(id));
-        let names = [seats[0].name.clone(), seats[1].name.clone()];
+        let seats: Vec<Seat> = conns.iter().zip(&teams).map(|(&id, &team)| self.seat_of(id, team)).collect();
+        let names: Vec<String> = seats.iter().map(|s| s.name.clone()).collect();
         let mut infos: List<SeatInfo, { crate::protocol::MAX_SEATS }> = List::default();
-        for (k, s) in seats.iter().enumerate() {
-            infos.push(SeatInfo { name: Text::new(&s.name), team: k as u8, platform: Text::new(&s.platform) });
+        for s in &seats {
+            infos.push(SeatInfo { name: Text::new(&s.name), team: s.team, platform: Text::new(&s.platform) });
         }
-        let referee = Referee::with_rules(seed, rules.clone());
+        let referee = Referee::seated(seed, rules.clone(), &teams);
+        let n = conns.len();
+        let tokens: Vec<Token> = (0..n).map(|_| new_token()).collect();
         self.matches.insert(
             match_id,
             Match {
-                conns,
+                conns: conns.clone(),
                 rules,
                 rules_bytes: rules_bytes.clone(),
+                teams: teams.clone(),
                 names: names.clone(),
                 seed,
                 referee,
                 started: Instant::now(),
-                rematch: [false; 2],
+                rematch: vec![false; n],
                 announced: false,
-                tokens: [new_token(), new_token()],
-                away: [None; 2],
+                tokens: tokens.clone(),
+                away: vec![None; n],
             },
         );
-        println!("match {match_id} start seed={seed} {:?} vs {:?}", names[0], names[1]);
+        println!("match {match_id} start seed={seed} teams={teams:?} {names:?}");
         if let Some(store) = &self.store {
             store.write(Op::Started { id: match_id, seed, seats });
         }
-        let tokens = self.matches[&match_id].tokens;
         for (seat, id) in conns.into_iter().enumerate() {
             self.set_place(id, Place::Playing(match_id));
             self.send(id, &ServerMsg::Start { match_id, seed, seat: seat as u8, rules: rules_bytes.clone(), seats: infos, resume: tokens[seat] });
@@ -619,27 +694,31 @@ impl Hub {
         let Some((mid, seat)) = found else { return 0 };
         let game = self.matches.get_mut(&mid).unwrap();
         let old = std::mem::replace(&mut game.conns[seat], id);
-        let other = game.conns[1 - seat];
+        let others = game.others(seat);
         let was_away = game.away[seat].take().is_some();
         if old != id {
             self.forget(old);
         }
         self.set_place(id, Place::Playing(mid));
         println!("match {mid} seat {seat} resumed{}", if was_away { "" } else { ", replacing its old connection" });
-        self.send(other, &ServerMsg::Away { seat: seat as u8, away: false });
+        for other in others {
+            self.send(other, &ServerMsg::Away { seat: seat as u8, away: false });
+        }
         mid
     }
 
     fn on_input(&mut self, mid: u64, id: u64, mut m: InputMsg) {
         let Some(game) = self.matches.get_mut(&mid) else { return };
-        let seat = if game.conns[0] == id { 0 } else { 1 };
-        let other = game.conns[1 - seat];
+        let Some(seat) = game.seat(id) else { return };
         let now = ticks_since(game.started);
-        // Checked first, so a message that breaks the rules never reaches the other player.
+        // Checked first, so a message that breaks the rules never reaches the other players.
         let fine = game.referee.input(seat, &m, now);
         if fine {
             m.seat = seat as u8;
-            self.send(other, &ServerMsg::Input(m));
+            let msg = ServerMsg::Input(m);
+            for other in game.others(seat) {
+                self.send(other, &msg);
+            }
         }
         self.announce_if_over(mid);
     }
@@ -651,7 +730,8 @@ impl Hub {
             return;
         }
         game.announced = true;
-        let conns = game.conns;
+        let conns = game.conns.clone();
+        let count = game.referee.state().team_count;
         let late = game.referee.latest_input.clone();
         let replay = game.referee.replay();
         println!(
@@ -661,17 +741,18 @@ impl Hub {
             outcome.tick
         );
         let Outcome { winner, reason, tick } = outcome;
-        let away = game.away.map(|a| a.is_some());
-        for id in conns {
-            self.send(id, &ServerMsg::Result { winner: if winner == 2 { 0 } else { winner }, draw: winner == 2, reason, tick });
+        let away: Vec<bool> = game.away.iter().map(|a| a.is_some()).collect();
+        let draw = winner >= count;
+        for &id in &conns {
+            self.send(id, &ServerMsg::Result { winner: if draw { 0 } else { winner }, draw, reason, tick });
         }
         // Nobody to ask for a rematch: whoever is still here goes back to the lobby.
-        if away.contains(&true) {
+        if let Some(gone) = away.iter().position(|&a| a) {
             self.matches.remove(&mid);
-            for seat in 0..2 {
+            for (seat, &id) in conns.iter().enumerate() {
                 if !away[seat] {
-                    self.send(conns[seat], &ServerMsg::Left { seat: 1 - seat as u8 });
-                    self.set_place(conns[seat], Place::Lobby);
+                    self.send(id, &ServerMsg::Left { seat: gone as u8 });
+                    self.set_place(id, Place::Lobby);
                 }
             }
         }
@@ -687,7 +768,7 @@ impl Hub {
             });
         }
         if let Some(store) = &self.store {
-            store.write(Op::Ended { id: mid, winner, reason: name_of(reason), tick, late: [late[0], late[1]], replay: saved });
+            store.write(Op::Ended { id: mid, winner, reason: name_of(reason), tick, late, replay: saved });
         }
     }
 
@@ -700,12 +781,11 @@ impl Hub {
             self.send(id, &ServerMsg::Notice("The server is about to restart, so no rematch this time.".into()));
             return;
         }
-        let seat = if game.conns[0] == id { 0 } else { 1 };
+        let Some(seat) = game.seat(id) else { return };
         game.rematch[seat] = true;
-        if game.rematch == [true, true] {
-            let (conns, rules, bytes) = (game.conns, game.rules.clone(), game.rules_bytes.clone());
-            self.matches.remove(&mid);
-            self.start_match(conns, rules, bytes);
+        if game.rematch.iter().all(|&r| r) {
+            let game = self.matches.remove(&mid).unwrap();
+            self.start_match(game.conns, game.rules, game.rules_bytes, game.teams);
         }
     }
 
@@ -755,12 +835,7 @@ impl Hub {
     fn drop_conn(&mut self, id: u64) {
         let Some(conn) = self.conns.remove(&id) else { return };
         match conn.place {
-            Place::Waiting => {
-                if self.queue == Some(id) {
-                    self.queue = None;
-                }
-                self.rooms.retain(|_, r| r.host != id);
-            }
+            Place::Waiting => self.drop_waiting(id),
             Place::Playing(mid) => {
                 let held = conn.features & features::RESUME != 0 && self.matches.get(&mid).is_some_and(|m| !m.announced);
                 if held {
@@ -777,23 +852,26 @@ impl Hub {
     /// slow connection, and the referee ends it if they don't come back in time.
     fn hold_seat(&mut self, mid: u64, id: u64) {
         let Some(game) = self.matches.get_mut(&mid) else { return };
-        let seat = if game.conns[0] == id { 0 } else { 1 };
+        let Some(seat) = game.seat(id) else { return };
         game.away[seat] = Some(Instant::now());
-        let other = game.conns[1 - seat];
         println!("match {mid} seat {seat} dropped; holding it");
-        self.send(other, &ServerMsg::Away { seat: seat as u8, away: true });
+        for other in game.others(seat) {
+            self.send(other, &ServerMsg::Away { seat: seat as u8, away: true });
+        }
     }
 
     fn leave_match(&mut self, mid: u64, id: u64) {
         let Some(game) = self.matches.get_mut(&mid) else { return };
-        let seat = if game.conns[0] == id { 0 } else { 1 };
-        let other = game.conns[1 - seat];
+        let Some(seat) = game.seat(id) else { return };
+        let others = game.others(seat);
         game.referee.forfeit(seat, EndReason::Left);
         self.announce_if_over(mid);
         self.matches.remove(&mid);
-        self.send(other, &ServerMsg::Left { seat: seat as u8 });
         // They stay connected, and can look for another game.
-        self.set_place(other, Place::Lobby);
+        for other in others {
+            self.send(other, &ServerMsg::Left { seat: seat as u8 });
+            self.set_place(other, Place::Lobby);
+        }
     }
 
     // The admin console.
@@ -896,16 +974,8 @@ impl Hub {
         }
     }
 
-    /// Takes a waiting player out of the queue or their room, leaving the connection.
-    fn drop_waiting(&mut self, id: u64) {
-        if self.queue == Some(id) {
-            self.queue = None;
-        }
-        self.rooms.retain(|_, r| r.host != id);
-    }
-
     fn snapshot(&self) -> Snapshot {
-        let room_of: HashMap<u64, &str> = self.rooms.iter().map(|(code, r)| (r.host, code.as_str())).collect();
+        let room_of: HashMap<u64, &str> = self.rooms.iter().flat_map(|(code, r)| r.members.iter().map(move |&m| (m, code.as_str()))).collect();
         let mut conns: Vec<ConnInfo> = self
             .conns
             .iter()
@@ -935,15 +1005,16 @@ impl Hub {
             .map(|(id, m)| MatchInfo {
                 id: *id,
                 seed: m.seed,
-                conns: m.conns,
+                conns: m.conns.clone(),
                 names: m.names.clone(),
+                teams: m.teams.clone(),
                 age_s: m.started.elapsed().as_secs(),
                 clock: ticks_since(m.started),
                 refereed: m.referee.tick(),
                 frontiers: m.referee.frontiers().to_vec(),
                 late: m.referee.latest_input.clone(),
-                over: m.referee.outcome().map(|o| describe(&o)),
-                away: m.away.map(|a| a.is_some()),
+                over: m.referee.outcome().map(|o| describe(&o, &m.teams)),
+                away: m.away.iter().map(|a| a.is_some()).collect(),
             })
             .collect();
         matches.sort_by_key(|m| m.id);
@@ -976,7 +1047,7 @@ impl Hub {
                 lost: b.lost,
             })
             .collect();
-        Some(Watch { id: mid, tick: state.tick, names: m.names.clone(), over: m.referee.outcome().map(|o| describe(&o)), boards })
+        Some(Watch { id: mid, tick: state.tick, names: m.names.clone(), teams: m.teams.clone(), over: m.referee.outcome().map(|o| describe(&o, &m.teams)), boards })
     }
 }
 

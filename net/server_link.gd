@@ -7,13 +7,13 @@ extends RefCounted
 
 signal welcomed(resumed: int) # the match this connection is back in, from its token; 0: none
 signal refused(why: String)
-signal waiting
+signal waiting(here: int, seats: int) # in the queue or a room, `here` of its `seats` taken
 signal started(match_id: int, game_seed: int, seat: int)
 signal input(pkt: Dictionary)
-signal finished(winner: int, reason: int, tick: int) # winner -1: a draw
+signal finished(winner: int, reason: int, tick: int) # winner: a team, or -1 for a draw
 signal pong(sent_usec: int)
-signal opponent_left
-signal opponent_away(away: bool) # their connection dropped and the match waits, or they're back
+signal opponent_left(seat: int) # after a match: that player left, and this one's in the lobby
+signal opponent_away(seat: int, away: bool) # their connection dropped and the match waits, or they're back
 signal notice(text: String) # from whoever runs the server
 signal closed
 
@@ -22,10 +22,12 @@ enum { PLAYED, LEFT, STALLED, WRONG_STATE, BAD_INPUT, TOO_LONG, ENDED }
 
 ## Who this player is to the server and the opponent. Set before open().
 var player_name := "Player"
-## From the latest start, set before `started` is emitted: the other player's name, the seats
-## ([{name, team, platform}]), and the match's rules (null: standard).
+## From the latest start, set before `started` is emitted: the other player's name in a 1v1,
+## the seats ([{name, team, platform}]), each seat's team, and the match's rules (null:
+## standard).
 var opponent_name := ""
 var seats: Array = []
+var teams := PackedInt32Array()
 var rules: SimRules = null
 ## From the latest start: the match, and this seat's token for getting it back after a drop.
 var match_id := 0
@@ -77,9 +79,9 @@ func queue(mode := 0) -> void:
 
 
 ## Code: letters and digits, up to 16. The first to ask hosts, and plays on room_rules (null:
-## standard); whoever joins plays on the host's.
-func room(code: String, room_rules: SimRules = null) -> void:
-	_send(_wire.room(code, room_rules.encode() if room_rules else PackedByteArray()))
+## standard) with room_teams, each seat's team (empty: a 1v1); whoever joins plays the host's.
+func room(code: String, room_rules: SimRules = null, room_teams := PackedInt32Array()) -> void:
+	_send(_wire.room(code, room_rules.encode() if room_rules else PackedByteArray(), PackedByteArray(Array(room_teams))))
 
 
 func rematch() -> void:
@@ -136,7 +138,7 @@ func decode(bytes: PackedByteArray) -> void:
 		"refused":
 			refused.emit(m.text)
 		"waiting":
-			waiting.emit()
+			waiting.emit(m.here, m.seats)
 		"start":
 			var r: SimRules = null
 			if not m.rules.is_empty():
@@ -151,10 +153,10 @@ func decode(bytes: PackedByteArray) -> void:
 			resume_token = m.resume
 			seats = m.seats
 			var seat: int = m.seat
-			opponent_name = ""
-			for k in seats.size():
-				if k != seat:
-					opponent_name = seats[k].name
+			teams = PackedInt32Array()
+			for s: Dictionary in seats:
+				teams.append(s.team)
+			opponent_name = seats[1 - seat].name if seats.size() == 2 and seat < 2 else ""
 			started.emit(m.match_id, m.seed, seat)
 		"input":
 			m.erase("type")
@@ -164,8 +166,8 @@ func decode(bytes: PackedByteArray) -> void:
 		"pong":
 			pong.emit(m.t)
 		"left":
-			opponent_left.emit()
+			opponent_left.emit(m.seat)
 		"notice":
 			notice.emit(m.text)
 		"away":
-			opponent_away.emit(m.away)
+			opponent_away.emit(m.seat, m.away)

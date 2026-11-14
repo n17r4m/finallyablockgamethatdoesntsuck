@@ -1,7 +1,8 @@
 //! FbgWire: the game's end of the match server's protocol, from fbg-proto, the same code the
 //! server runs. GDScript hands it Dictionaries and gets bytes, and the other way round.
 //! Input Dictionaries are the ones RollbackSession already speaks:
-//! {f, a, s, v, t: PackedInt64Array, m: PackedInt32Array, c: {tick: hash}}.
+//! {f, a, s, v, t: PackedInt64Array, m: PackedInt32Array, c: {tick: hash}}, plus
+//! acks: PackedInt64Array (per seat) in a match of more than two.
 
 use fbg_proto::{features, ClientMsg, Decoded, EndReason, InputMsg, List, Refusal, SeatInfo, ServerMsg, Text, Token, MAX_SEATS, PROTOCOL};
 use godot::prelude::*;
@@ -53,6 +54,9 @@ fn input_from(d: &VarDictionary) -> InputMsg {
     for (tick, mask) in t.as_slice().iter().zip(masks.as_slice()) {
         m.changes.push((*tick, *mask));
     }
+    if let Some(acks) = get(d, "acks").and_then(|v| v.try_to::<PackedInt64Array>().ok()) {
+        m.acks = List::of(acks.as_slice());
+    }
     if let Some(c) = get(d, "c").and_then(|v| v.try_to::<VarDictionary>().ok()) {
         let mut checks: Vec<(i64, i64)> = c.iter_shared().filter_map(|(k, v)| Some((k.try_to::<i64>().ok()?, v.try_to::<i64>().ok()?))).collect();
         checks.sort();
@@ -76,7 +80,13 @@ fn input_to(m: &InputMsg, d: &mut VarDictionary) {
         put_int_key(&mut c, *k, *h);
     }
     put(d, "c", c.to_variant());
+    if !m.acks.is_empty() {
+        put(d, "acks", PackedInt64Array::from(&m.acks[..]).to_variant());
+    }
 }
+
+/// Everything this game can do beyond the protocol's core.
+const FEATURES: u64 = features::CUSTOM_RULES | features::RESUME | features::SEATS;
 
 fn put_int_key(d: &mut VarDictionary, k: i64, v: i64) {
     #[cfg(not(target_family = "wasm"))]
@@ -103,7 +113,7 @@ impl FbgWire {
     /// What this game can do beyond the protocol's core.
     #[func]
     fn features() -> i64 {
-        (features::CUSTOM_RULES | features::RESUME) as i64
+        FEATURES as i64
     }
 
     /// resume: a start's token to take that seat back, or empty.
@@ -115,7 +125,7 @@ impl FbgWire {
             tick_hz: u32::from(fbg_sim::consts::TICK_HZ),
             name: Text::new(&name.to_string()),
             platform: Text::new(&platform.to_string()),
-            features: features::CUSTOM_RULES | features::RESUME,
+            features: FEATURES,
             resume: token(resume.as_slice()),
         };
         pba(&m.encode())
@@ -126,10 +136,11 @@ impl FbgWire {
         pba(&ClientMsg::Queue { mode: mode as u32 }.encode())
     }
 
-    /// rules: SimRules.encode(), or empty for the standard rules.
+    /// rules: SimRules.encode(), or empty for the standard rules. teams: each seat's team,
+    /// or empty for a 1v1. Only the room's host's count.
     #[func]
-    fn room(code: GString, rules: PackedByteArray) -> PackedByteArray {
-        pba(&ClientMsg::Room { code: Text::new(&code.to_string()), rules: rules.as_slice().to_vec() }.encode())
+    fn room(code: GString, rules: PackedByteArray, teams: PackedByteArray) -> PackedByteArray {
+        pba(&ClientMsg::Room { code: Text::new(&code.to_string()), rules: rules.as_slice().to_vec(), teams: teams.as_slice().to_vec() }.encode())
     }
 
     #[func]
@@ -171,8 +182,10 @@ impl FbgWire {
                 put(&mut d, "text", text.to_variant());
                 "refused"
             }
-            ServerMsg::Waiting { room } => {
+            ServerMsg::Waiting { room, here, seats } => {
                 put(&mut d, "room", room.to_string().to_variant());
+                put(&mut d, "here", i64::from(here).to_variant());
+                put(&mut d, "seats", i64::from(seats).to_variant());
                 "waiting"
             }
             ServerMsg::Start { match_id, seed, seat, rules, seats, resume } => {
@@ -232,7 +245,7 @@ impl FbgWire {
         let msg = match string(&d, "type").as_str() {
             "welcome" => ServerMsg::Welcome { features: int(&d, "features") as u64, resumed: int(&d, "resumed") as u64 },
             "refused" => ServerMsg::Refused { code: refusal(int(&d, "code")), text: string(&d, "text") },
-            "waiting" => ServerMsg::Waiting { room: Text::new(&string(&d, "room")) },
+            "waiting" => ServerMsg::Waiting { room: Text::new(&string(&d, "room")), here: int(&d, "here") as u8, seats: int(&d, "seats") as u8 },
             "start" => {
                 let mut seats: List<SeatInfo, MAX_SEATS> = List::default();
                 if let Some(list) = get(&d, "seats").and_then(|v| v.try_to::<VarArray>().ok()) {

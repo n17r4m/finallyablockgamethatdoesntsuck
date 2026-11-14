@@ -1,7 +1,7 @@
 extends Node
-## Transport + match handshake, 1v1. Either direct, host/join, for LAN: ENet natively,
+## Transport + match handshake. Either direct, host/join, for a 1v1 on a LAN: ENet natively,
 ## WebSocket where ENet doesn't exist or when config says so. Or through the match server
-## (connect_server), which is how the internet plays. Everything above this layer only sees
+## (connect_server), which is how the internet plays, any format. Everything above this layer only sees
 ## Dictionaries, so which one is in use is local to this file.
 
 signal status(text: String)
@@ -20,7 +20,8 @@ var match_rules: SimRules = null
 ## What practice and CPU matches play by. null: standard.
 var practice_rules: SimRules = null
 var local_idx := 0
-## Offline formats: each seat's team, you in seat 0.
+## Formats: each seat's team. Offline, you're seat 0; online, seats go in the order players
+## arrive in the room, so the host is seat 0 and whoever joins first is the host's teammate.
 const FORMATS := {
 	"1v1": [0, 1], "2v2": [0, 0, 1, 1], "3v3": [0, 0, 0, 1, 1, 1],
 	"3-way": [0, 1, 2], "4-way": [0, 1, 2, 3], "1v2": [0, 1, 1],
@@ -30,6 +31,8 @@ const FORMATS := {
 var match_teams := PackedInt32Array()
 ## The format chosen for offline matches: each seat's team, you in seat 0. Empty for a 1v1.
 var practice_teams := PackedInt32Array()
+## The format of a room this player makes on the match server. Empty for a 1v1.
+var room_teams := PackedInt32Array()
 var cpu_name := "" # offline opponent; "" = endless solo
 var cpu_level := "normal"
 var demo := false # CPU plays your board too (attract mode / footage)
@@ -41,7 +44,9 @@ const SERVER_OPPONENT := -1 # remote_id while the opponent is behind the match s
 const PUBLIC_SERVER := "wss://play.shesellsseashells.ca/ws"
 const ROOM_LETTERS := "ABCDEFGHJKMNPQRSTUVWXYZ23456789" # nothing to misread over a call
 
-var opponent_name := "" # through the match server; "" otherwise
+var opponent_name := "" # through the match server in a 1v1; "" otherwise
+## Through the match server: each seat's player's name. Empty otherwise.
+var seat_names := PackedStringArray()
 ## Why the opponent is gone, when it's more than leaving: the match screen shows it.
 var gone_why := ""
 
@@ -139,18 +144,18 @@ static func new_room_code() -> String:
 	return code
 
 
-## Online through the public match server: quick match, or a room with a friend.
-func play_online(room_code := "", room_rules: SimRules = null) -> Error:
+## Online through the public match server: quick match, or a room with friends.
+func play_online(room_code := "", room_rules: SimRules = null, room_teams := PackedInt32Array()) -> Error:
 	var url := server_url()
 	if url == "":
 		status.emit("No match server set: add one under Settings")
 		return ERR_UNCONFIGURED
-	return connect_server(url, room_code, room_rules)
+	return connect_server(url, room_code, room_rules, room_teams)
 
 
 ## Through the match server. An empty room means quick match against whoever's waiting. A
-## room's first player hosts it, on room_rules (null: standard).
-func connect_server(url: String, room_code := "", room_rules: SimRules = null) -> Error:
+## room's first player hosts it, on room_rules (null: standard) and room_teams (empty: 1v1).
+func connect_server(url: String, room_code := "", room_rules: SimRules = null, room_teams := PackedInt32Array()) -> Error:
 	leave()
 	if not ServerLink.available():
 		status.emit("Online play isn't in this build of the game")
@@ -167,17 +172,18 @@ func connect_server(url: String, room_code := "", room_rules: SimRules = null) -
 		if room_code == "":
 			link.queue()
 		else:
-			link.room(room_code, room_rules))
+			link.room(room_code, room_rules, room_teams))
 	link.refused.connect(func(why: String) -> void:
 		leave()
 		status.emit(why))
-	link.waiting.connect(func() -> void:
+	link.waiting.connect(func(here: int, seats: int) -> void:
 		if room_code == "":
 			status.emit("Waiting for an opponent…")
-		else:
-			var link_text := invite_link(room_code)
-			status.emit("Room %s: waiting for your friend.%s" % [room_code,
-					"\nInvite link (copied if you made the room): " + link_text if link_text != "" else ""]))
+			return
+		var link_text := invite_link(room_code)
+		var who := "your friend" if seats <= 2 else "friends: %d of %d here" % [here, seats]
+		status.emit("Room %s: waiting for %s.%s" % [room_code, who,
+				"\nInvite link (copied if you made the room): " + link_text if link_text != "" else ""]))
 	_wire_match(link)
 	status.emit("Connecting to the server…")
 	return OK
@@ -189,14 +195,21 @@ func _wire_match(link: ServerLink) -> void:
 	link.input.connect(func(pkt: Dictionary) -> void: packet.emit(pkt))
 	link.finished.connect(_on_server_result)
 	link.pong.connect(_on_rtt_sample)
-	link.opponent_left.connect(func() -> void:
+	link.opponent_left.connect(func(seat: int) -> void:
 		_in_match = false
-		status.emit("Opponent left")
+		status.emit("%s left" % _who(seat))
 		opponent_left.emit())
-	link.opponent_away.connect(func(away: bool) -> void:
-		_say("Opponent's connection dropped: waiting for them…" if away else "Opponent is back"))
+	link.opponent_away.connect(func(seat: int, away: bool) -> void:
+		_say("%s's connection dropped: waiting…" % _who(seat) if away else "%s is back" % _who(seat)))
 	link.notice.connect(_say)
 	link.closed.connect(_on_link_closed.bind(link))
+
+
+## A seat's player, as the status line names them.
+func _who(seat: int) -> String:
+	if seat_names.size() <= 2 or seat < 0 or seat >= seat_names.size():
+		return "Opponent"
+	return seat_names[seat] if seat_names[seat] != "" else "A player"
 
 
 func _say(text: String) -> void:
@@ -278,6 +291,7 @@ func leave() -> void:
 	hosting = false
 	remote_id = 0
 	opponent_name = ""
+	seat_names = PackedStringArray()
 	gone_why = ""
 	rtt_ms = 0.0
 	_self_ready = false
@@ -351,7 +365,7 @@ func _process(delta: float) -> void:
 		_ping_t = 0.0
 		if _link:
 			_link.ping()
-		else:
+		elif remote_id > 0: # not while getting back on the match server
 			_ping.rpc_id(remote_id, Time.get_ticks_usec())
 
 
@@ -359,10 +373,17 @@ func _on_server_start(_match_id: int, game_seed: int, seat: int) -> void:
 	remote_id = SERVER_OPPONENT
 	_in_match = true
 	opponent_name = _link.opponent_name if _link else ""
+	seat_names = PackedStringArray()
+	var teams := PackedInt32Array()
+	if _link:
+		for s: Dictionary in _link.seats:
+			seat_names.append(s.name)
+		teams = _link.teams
 	gone_why = ""
 	match_seed = game_seed
 	match_rules = _link.rules if _link else null
-	match_teams = PackedInt32Array()
+	# A 1v1 goes as none, as it does offline.
+	match_teams = PackedInt32Array() if teams == PackedInt32Array([0, 1]) else teams
 	local_idx = seat
 	match_started.emit()
 
@@ -373,12 +394,21 @@ func _on_server_result(winner: int, reason: int, _tick: int) -> void:
 	_in_match = false
 	if reason == ServerLink.PLAYED:
 		return
-	var i_won := winner == local_idx
+	var mine := match_teams[local_idx] if not match_teams.is_empty() else local_idx
+	var i_won := winner == mine
+	# With more seats the result says which team, not which player: name the side.
+	var many := seat_names.size() > 2
+	var them := "Someone on the other side" if many else "Opponent"
+	var us := "Someone on your side" if many else "You"
+	if winner == -1:
+		them = "Someone"
+		us = "Someone"
 	match reason:
 		ServerLink.STALLED:
-			gone_why = "Opponent stopped responding" if i_won else "You stopped responding"
+			gone_why = "%s stopped responding" % (them if i_won else us)
 		ServerLink.WRONG_STATE, ServerLink.BAD_INPUT:
-			gone_why = "Opponent's game disagreed with the referee" if i_won else "Your game disagreed with the referee"
+			gone_why = ("%s's game disagreed with the referee" % them) if i_won else \
+					("%s's game disagreed with the referee" % us if many or winner == -1 else "Your game disagreed with the referee")
 		ServerLink.ENDED:
 			gone_why = "The server ended the match"
 		ServerLink.TOO_LONG:

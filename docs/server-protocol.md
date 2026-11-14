@@ -35,12 +35,15 @@ exists: `net/server_link.gd` turns its packets to and from these bytes.
 | Reason | What happened | Result |
 |---|---|---|
 | Played | The rules ended the game | Whoever the referee says won |
-| Left | A player's connection closed (a game without resume, or after the game), or it flooded the server | The other player wins |
-| Stalled | A player's inputs stopped for 10 s while it held the match up | The other player wins |
-| Wrong state | A player's hash differs from the referee's | The other player wins, or a draw if both differ |
-| Bad input | An impossible message: bits outside the input mask, a change past its own frontier, a frontier over 2 s past the server's clock, or a hash that can't exist | The other player wins |
+| Left | A player's connection closed (a game without resume, or after the game), or it flooded the server | The other team wins |
+| Stalled | A player's inputs stopped for 10 s while it held the match up | The other team wins |
+| Wrong state | A player's hash differs from the referee's | The other team wins, or a draw if more than one player differs |
+| Bad input | An impossible message: bits outside the input mask, a change past its own frontier, a frontier over 2 s past the server's clock, or a hash that can't exist | The other team wins |
 | Too long | Two hours of game | A draw |
 | Ended | Whoever runs the server ended it from the admin console | A draw |
+
+"The other team" is the other player in a 1v1. With more than two teams there's no saying who
+would have won, so a match that ends against one player is a draw among the rest.
 
 A match that falls behind the server's clock is not stalled. Clients drop ticks after a hitch
 and never bank them, so an honest match can run late for good. Only a frontier that has stopped
@@ -84,7 +87,7 @@ Types: **uint** varint; **sint** zigzag varint; **fixed64** 8 bytes, for seeds a
 |---|---|---|
 | 1 | Hello | protocol [1], engine [2] (`RULES_VERSION`), tick rate [3], name [4] (text, up to 24 bytes), platform [5] (up to 16 bytes of letters, digits, `.` and `_`), features [6], resume [7] (a start's 16-byte token, to take that seat back) |
 | 2 | Quick match | mode [1]: 0 is standard 1v1, the only one so far |
-| 3 | Room | code [1] (1-16 ASCII letters and digits, case ignored), rules [2] (a ruleset's bytes; empty for standard) |
+| 3 | Room | code [1] (1-16 ASCII letters and digits, case ignored), rules [2] (a ruleset's bytes; empty for standard), teams [3] (a byte per seat, its team; empty for a 1v1) |
 | 4 | Input | see below |
 | 5 | Rematch | |
 | 6 | Ping | time [1] |
@@ -95,16 +98,28 @@ Types: **uint** varint; **sint** zigzag varint; **fixed64** 8 bytes, for seeds a
 |---|---|---|
 | 16 | Welcome | features [1], resumed [2]: the match the hello's token got this player back into, or 0 |
 | 17 | Refused | code [1]: 0 other, 1 update, 2 draining, 3 banned, 4 full, 5 bad rules; text [2]. The connection then closes |
-| 18 | Waiting | room [1], empty in the queue |
+| 18 | Waiting | room [1], empty in the queue; here [2] of the room's seats [3] are taken. Sent again to everyone in the room when that changes |
 | 19 | Start | match id [1], seed [2] fixed64, your seat [3], rules [4] (empty: standard), seats [5], repeated: each a message of name [1], team [2], platform [3]; resume [6], this seat's 16-byte token |
 | 20 | Input | the same as the game's, with seat [1] saying whose |
-| 21 | Result | winner [1] (a seat), reason [2] (the table above, in order), tick [3] sint, draw [4] |
+| 21 | Result | winner [1] (a team: in a 1v1, the seat), reason [2] (the table above, in order), tick [3] sint, draw [4] |
 | 22 | Pong | time [1], from the ping |
 | 23 | Left | seat [1]: that player left after the game, and this one is back in the lobby |
 | 24 | Notice | text [1], up to 200 bytes: from whoever runs the server, to show the player |
 | 25 | Away | seat [1], away [2]: that seat's connection dropped and the match is waiting (true), or it's back (false) |
 
-**Features**: bit 0, custom rules; bit 1, resume (see above). A room's first player hosts it, and the host's rules are the
+**Features**: bit 0, custom rules; bit 1, resume (see above); bit 2, seats: plays matches of
+more than two (reads and sends acks [10]).
+
+**Rooms.** A room's first player hosts it, and the host's rules and teams are the match's. The
+teams are each seat's team, numbered from 0, every team with a seat and at least two teams, two
+to eight seats (`fbg_sim`'s `MAX_SEATS`, the cost of rolling back every board). Seats go in the
+order players arrive, so the host is seat 0. The match starts once every seat is taken; until
+then whoever leaves the room frees their place, and the room lasts while anyone is in it. A
+game that didn't say it can play more than two isn't let into a bigger room. Every input is
+relayed to every other seat, and Away and Left go to everyone else. A rematch starts once every
+seat has asked for one.
+
+The host's rules are the
 match's; the server checks them with the same code the sims run (`Rules::decode`) and turns away
 anything that isn't a playable ruleset. A game that didn't say it can play custom rules is told
 it can't join such a room, and stays in the lobby. Rematches keep the rules.
@@ -112,7 +127,9 @@ it can't join such a room, and stays in the lobby. Rematches keep the rules.
 **Input**, both ways: seat [1] uint, frontier [2] sint, then relative to the frontier: acknowledged
 [3] sint, the sender's tick [4] sint; advantage [5] sint; change ticks [6] packed sint, each from
 the one before (the first from the frontier); change masks [7] packed uint (32 bits); check ticks
-[8] packed sint, the same way; check hashes [9] packed fixed64. Up to 256 changes and 16 checks,
+[8] packed sint, the same way; check hashes [9] packed fixed64; acks [10] packed sint, with more
+than two seats: per seat, the newest change of that seat's the sender has seen, each from the one
+before (the first from the frontier), so [3] is only a 1v1's. Up to 256 changes and 16 checks,
 and ticks and masks pair up. These mean what they mean in `sim/rollback_session.gd`. A typical
 input is about 17 bytes, against 47 in protocol 2, and reading one allocates nothing.
 

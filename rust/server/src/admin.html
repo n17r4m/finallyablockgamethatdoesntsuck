@@ -234,6 +234,15 @@ function rtt(v) {
 let watching = null;
 let last = null;
 
+// Players by team, "vs" between teams: "Ann & Bo vs Cy & Di". `one(i)` draws seat i.
+function lineup(teams, one, vs = "vs") {
+  const count = teams.length ? Math.max(...teams) + 1 : 0;
+  const sides = [];
+  for (let t = 0; t < count; t++) sides.push(teams.map((x, i) => x === t ? one(i) : null).filter((x) => x !== null).join(" &amp; "));
+  return sides.join(` <span class="dim">${vs}</span> `);
+}
+const perSeat = (xs, f) => xs.map(f).join(" / ");
+
 async function refresh() {
   let s;
   try { s = await get("/api/state"); } catch (e) {
@@ -255,14 +264,14 @@ async function refresh() {
 
   table($("matches"), ["Match", "Players", "Ping", "Age", "#Behind clock", "#Frontier gap", "#Worst late", "State", ""], s.matches.map((m) => {
     const behind = ms(m.clock - m.refereed);
-    const gap = ms(Math.abs(m.frontiers[0] - m.frontiers[1]));
+    const gap = ms(Math.max(...m.frontiers) - Math.min(...m.frontiers));
     return `<tr><td>${m.id}</td>
-      <td>${esc(m.names[0])}${m.away?.[0] ? ` <span class="warn">(away)</span>` : ""} <span class="dim">vs</span> ${esc(m.names[1])}${m.away?.[1] ? ` <span class="warn">(away)</span>` : ""}</td>
-      <td>${rtt(byId[m.conns[0]]?.rtt_ms)} / ${rtt(byId[m.conns[1]]?.rtt_ms)}</td>
+      <td>${lineup(m.teams, (i) => `${esc(m.names[i])}${m.away[i] ? ` <span class="warn">(away)</span>` : ""}`)}</td>
+      <td>${perSeat(m.conns, (c) => rtt(byId[c]?.rtt_ms))}</td>
       <td>${ago(m.age_s)}</td>
       <td class="num ${behind > 1000 ? "warn" : ""}">${behind} ms</td>
       <td class="num">${gap} ms</td>
-      <td class="num">${ms(m.late[0])} / ${ms(m.late[1])} ms</td>
+      <td class="num">${perSeat(m.late, ms)} ms</td>
       <td>${m.over ? `<span class="dim">${esc(m.over)}</span>` : `<span class="good">playing</span>`}</td>
       <td><button data-watch="${m.id}">Watch</button> ${m.over ? "" : `<button class="danger" data-end="${m.id}">End</button>`}</td></tr>`;
   }), "No matches right now.");
@@ -301,12 +310,12 @@ function drawMap(s, byId) {
     `<div class="warn">${c.place === "queue" ? "quick match" : esc(c.place)} · ${ago(c.here_s)}</div>`)).join("");
   const playBody = s.matches.map((m) => {
     const sq = (i) => `<div class="sq ${m.over ? "" : "play"}" title="${byId[m.conns[i]] ? tip(byId[m.conns[i]]) : esc(m.names[i])}"></div>`;
-    return `<button class="pair" data-watch="${m.id}" title="Watch match ${m.id}"><span class="duo">${sq(0)}${sq(1)}</span>
-      <span>${esc(m.names[0])} <span class="dim">v</span> ${esc(m.names[1])}</span><span class="dim">${m.over ? "finishing" : ago(m.age_s)}</span></button>`;
+    return `<button class="pair" data-watch="${m.id}" title="Watch match ${m.id}"><span class="duo">${m.conns.map((_, i) => sq(i)).join("")}</span>
+      <span>${lineup(m.teams, (i) => esc(m.names[i]), "v")}</span><span class="dim">${m.over ? "finishing" : ago(m.age_s)}</span></button>`;
   }).join("");
   $("lanes").innerHTML = `<div class="lanes">
     ${lane("waiting", "Waiting for a game", waiting.length, waitBody, "nobody waiting")}
-    ${lane("", "Playing", s.matches.length * 2, playBody, "no games")}
+    ${lane("", "Playing", s.matches.reduce((n, m) => n + m.conns.length, 0), playBody, "no games")}
     ${lane("", "In the menu", menu.length, menu.map((c) => tile(c, "lobby")).join(""), "nobody idle")}
     ${fresh.length ? lane("", "Connecting", fresh.length, fresh.map((c) => tile(c, "new")).join(""), "") : ""}
   </div>`;
@@ -397,7 +406,7 @@ async function drawWatch() {
     ctx.lineWidth = 2;
     ctx.strokeRect(b.cursor[0] * CELL, b.cursor[1] * CELL, 2 * CELL, CELL);
     fig.querySelector("figcaption").innerHTML =
-      `<b>${esc(w.names[i])}</b> · ${b.score} pts${b.chain > 1 ? ` · <span class="good">chain ${b.chain}</span>` : ""}` +
+      `<b>${esc(w.names[i])}</b>${w.teams.length > 2 ? ` <span class="dim">team ${w.teams[i] + 1}</span>` : ""} · ${b.score} pts${b.chain > 1 ? ` · <span class="good">chain ${b.chain}</span>` : ""}` +
       `${b.incoming ? ` · <span class="warn">${b.incoming} incoming</span>` : ""}${b.lost ? ` · <span class="bad">topped out</span>` : ""}`;
   });
 }
@@ -447,13 +456,15 @@ async function slow() {
     bars($("late"), st.late.length ? counts : [], "No finished matches yet.");
 
     const h = await get("/api/history?limit=50");
-    const won = (m, i) => m.winner === i ? `<b>${esc(m.names[i])}</b>` : esc(m.names[i]);
+    // The winner is a team; a draw is the team count.
+    const won = (m, i) => m.winner === m.teams[i] ? `<b>${esc(m.names[i])}</b>` : esc(m.names[i]);
+    const teamCount = (m) => m.teams.length ? Math.max(...m.teams) + 1 : 2;
     table($("history"), ["Match", "Started", "Players", "#Length", "Ended by", "#Worst late", "Replay"], h.map((m) => `<tr>
       <td>${m.id}</td><td>${when(m.started)}</td>
-      <td>${won(m, 0)} <span class="dim">vs</span> ${won(m, 1)}${m.winner === 2 ? ` <span class="dim">(draw)</span>` : ""}</td>
+      <td>${lineup(m.teams, (i) => won(m, i))}${m.winner === teamCount(m) ? ` <span class="dim">(draw)</span>` : ""}</td>
       <td class="num">${m.end_tick != null ? (m.end_tick / HZ).toFixed(0) + " s" : "–"}</td>
       <td class="${["wrong_state", "bad_input"].includes(m.reason) ? "bad" : m.reason ? "" : "good"}">${esc(m.reason ?? "playing")}</td>
-      <td class="num">${m.late[0] != null ? `${ms(m.late[0])} / ${ms(m.late[1])} ms` : "–"}</td>
+      <td class="num">${m.late.some((l) => l != null) ? `${perSeat(m.late, (l) => l != null ? ms(l) : "–")} ms` : "–"}</td>
       <td>${m.replay ? `<a href="/api/replay/${m.id}">download</a>` : `<span class="dim">–</span>`}</td></tr>`), "No matches recorded yet.");
 
     const b = await get("/api/bans");
